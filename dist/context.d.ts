@@ -55,5 +55,5 @@ export interface InvestigationResult {
     environment: EnvSnapshot;
     frames: StackFrame[];
 }
-export declare function investigate(errorText: string, cwd: string): InvestigationResult;
+export declare function investigate(errorText: string, cwd: string, hintFiles?: string[]): InvestigationResult;
 export {};

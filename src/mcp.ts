@@ -56,20 +56,20 @@ export function createMcpServer(): McpServer {
   // The killer feature. One call: error in, full context out.
   server.registerTool("debug_investigate", {
     title: "Investigate Error",
-    description: `The primary debugging tool. Give it an error message or stack trace and it returns:
-- Error classification (type, severity, plain-language suggestion)
-- Source code snippets from the exact files/lines in the stack trace
-- Git context (branch, recent changes to those files)
-- Runtime environment (Node version, frameworks, env vars)
+    description: `The primary debugging tool. Works for BOTH runtime errors AND logic/behavior bugs.
 
-This is a COMPLETE investigation — no follow-up calls needed to understand the error.
+For runtime errors: give it the stack trace → returns error classification, source code at crash site, git context, environment.
+For logic bugs: describe the problem + pass file paths in 'files' parameter → returns source code from those files for comparison.
+
+Also auto-searches debug memory for past solutions to similar errors.
 Start every debugging session with this tool.`,
     inputSchema: {
-      error: z.string().describe("Error message, stack trace, or terminal output"),
+      error: z.string().describe("Error message, stack trace, or bug description"),
       sessionId: z.string().optional().describe("Existing session ID, or omit to auto-create"),
       problem: z.string().optional().describe("Bug description (used if creating new session)"),
+      files: z.array(z.string()).optional().describe("File paths to examine (for logic bugs with no stack trace)"),
     },
-  }, async ({ error: errorText, sessionId, problem }) => {
+  }, async ({ error: errorText, sessionId, problem, files: hintFiles }) => {
     // Auto-create session if needed
     let session;
     if (sessionId) {
@@ -79,7 +79,7 @@ Start every debugging session with this tool.`,
     }
 
     // Run the investigation engine
-    const result = investigate(errorText, cwd);
+    const result = investigate(errorText, cwd, hintFiles);
 
     // Check memory for past solutions to similar errors
     const pastSolutions = recall(cwd, errorText, 3);
@@ -318,6 +318,12 @@ Idempotent — safe to call multiple times. Files are restored to their pre-inst
       );
       const errorData = errorCap?.data as Record<string, Record<string, string>> | undefined;
 
+      // Merge instrumented files + rootCause files (logic bugs may have no instrumentation)
+      const filesSet = new Set(session.instrumentation.map((i) => basename(i.filePath)));
+      const rc = rootCause as CausalLink | undefined;
+      if (rc?.errorFile) filesSet.add(basename(rc.errorFile));
+      if (rc?.causeFile) filesSet.add(basename(rc.causeFile));
+
       remember(cwd, {
         id: session.id,
         timestamp: new Date().toISOString(),
@@ -325,8 +331,8 @@ Idempotent — safe to call multiple times. Files are restored to their pre-inst
         errorType: errorData?.error?.type ?? "Unknown",
         category: errorData?.error?.category ?? "runtime",
         diagnosis,
-        files: session.instrumentation.map((i) => basename(i.filePath)),
-        rootCause: rootCause as CausalLink | undefined,
+        files: [...filesSet],
+        rootCause: rc,
       });
     }
 

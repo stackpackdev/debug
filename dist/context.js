@@ -13,7 +13,7 @@
  */
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join, relative, isAbsolute } from "node:path";
+import { join, relative, isAbsolute, resolve } from "node:path";
 import { redactSensitiveData } from "./security.js";
 // Match "at FnName (file:line:col)" or "at file:line:col"
 const NODE_FRAME = /at\s+(?:([\w$.< >\[\]]+?)\s+)?\(?([^\s()]+):(\d+):(\d+)\)?/gm;
@@ -324,15 +324,58 @@ function classifyError(raw) {
             break;
         }
     }
+    // Logic/behavior bug detection — no known error pattern matched, check for prose descriptions
+    if (r.type === "Unknown" && r.category === "runtime") {
+        const logicPatterns = /wrong|incorrect|mismatch|should be|expected|doesn't match|off by|hardcoded|not (working|showing|rendering|updating|displaying)|broken|behav(e|ior|iour)|visual(ly)?|looks? (wrong|off|different|broken)/i;
+        if (logicPatterns.test(raw)) {
+            r.type = "LogicBug";
+            r.category = "logic";
+            r.severity = "warning";
+            r.suggestion = "Logic/behavior bug — pass suspect file paths in the 'files' parameter for source context.";
+        }
+    }
     return r;
 }
-export function investigate(errorText, cwd) {
+export function investigate(errorText, cwd, hintFiles) {
     const frames = parseStackFrames(errorText, cwd);
-    const sourceCode = extractSourceSnippets(frames, cwd);
+    let sourceCode = extractSourceSnippets(frames, cwd);
+    // If no stack frames but hint files provided, extract source from those files
+    if (sourceCode.length === 0 && hintFiles && hintFiles.length > 0) {
+        sourceCode = extractSourceFromHintFiles(hintFiles, cwd);
+    }
     const relevantFiles = sourceCode.map((s) => s.file);
     const git = getGitContext(cwd, relevantFiles);
     const environment = getEnvironment(cwd);
     const error = classifyError(errorText);
     return { error, sourceCode, git, environment, frames };
+}
+/**
+ * Extract source snippets from explicitly provided file paths.
+ * Used for logic bugs where there's no stack trace to parse.
+ */
+function extractSourceFromHintFiles(files, cwd) {
+    const snippets = [];
+    for (const filePath of files.slice(0, 5)) { // Max 5 files
+        const resolved = resolve(cwd, filePath);
+        if (!existsSync(resolved))
+            continue;
+        try {
+            const content = readFileSync(resolved, "utf-8");
+            const allLines = content.split("\n");
+            // Show first 80 lines or full file if shorter
+            const lines = allLines.slice(0, 80).map((l, i) => `${String(i + 1).padStart(6)} | ${l}`).join("\n");
+            const truncated = allLines.length > 80 ? `\n  ... (${allLines.length - 80} more lines)` : "";
+            snippets.push({
+                file: resolved,
+                relativePath: relative(cwd, resolved),
+                startLine: 1,
+                endLine: Math.min(allLines.length, 80),
+                errorLine: 0,
+                lines: lines + truncated,
+            });
+        }
+        catch { }
+    }
+    return snippets;
 }
 //# sourceMappingURL=context.js.map

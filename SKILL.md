@@ -1,6 +1,6 @@
 ---
 name: debug-toolkit
-description: Closed-loop debugging for AI agents with cross-session memory. Investigate errors, recall past fixes, detect patterns, instrument code, capture output, verify fixes, auto-cleanup with causal chains. Start every debugging task with debug_investigate.
+description: "Closed-loop debugging for AI agents. Use for runtime errors, stack traces, test failures, AND logic/behavior bugs (wrong output, visual mismatch, unexpected values). Provides error classification, source context, git history, cross-session memory with past solutions, and pattern detection. Start every debugging task with debug_investigate."
 tools: ["debug_investigate", "debug_recall", "debug_patterns", "debug_instrument", "debug_capture", "debug_verify", "debug_cleanup", "debug_session"]
 ---
 
@@ -14,7 +14,11 @@ Use these tools whenever you encounter:
 - A runtime error or stack trace
 - A test failure
 - Code that runs but produces wrong output
+- A visual/rendering bug ("looks wrong", "doesn't match")
+- A logic bug ("wrong value", "should be X but is Y")
 - A bug report from the user
+
+**Do NOT debug manually** (exploring code with Read/Grep/Agent) when debug-toolkit is available. Start with `debug_investigate` — it gives you everything in one call.
 
 ## The Workflow
 
@@ -32,25 +36,30 @@ Use these tools whenever you encounter:
 ## Tool Reference
 
 ### debug_investigate
-**Start here.** Parses error text, finds source files, shows the exact lines, gets git context. Auto-searches memory for past solutions with staleness info.
+**Start here.** Works for BOTH runtime errors AND logic bugs.
+
+For runtime errors (stack traces):
 ```
-Input: { error: "<stack trace>", problem?: "description" }
-Output: { error, sourceCode, git, environment, pastSolutions?, nextStep }
+Input: { error: "<stack trace>" }
 ```
-Past solutions include `stale` (has code changed?) and `rootCause` (causal chain from last fix).
+
+For logic/behavior bugs (no stack trace):
+```
+Input: { error: "description of what's wrong", files: ["src/Component.tsx", "src/utils.ts"] }
+```
+
+Output: `{ error, sourceCode, git, environment, pastSolutions?, nextStep }`
 
 ### debug_recall
 Explicitly search past debug sessions. Returns diagnoses with staleness and causal chains.
 ```
 Input: { query: "TypeError Cannot read properties email" }
-Output: { matches: [{ problem, diagnosis, stale, staleness?, rootCause? }] }
 ```
 
 ### debug_patterns
 Detect patterns across ALL past sessions. Use periodically.
 ```
 Input: {}
-Output: { patterns: [{ type, severity, message }] }
 ```
 Pattern types: `recurring_error`, `hot_file`, `regression`, `error_cluster`.
 
@@ -98,7 +107,7 @@ Input: { sessionId }
 1. NEVER skip debug_investigate. It's the highest-leverage step.
 2. Read `nextStep` in every response — it tells you what to do.
 3. If past solutions are found, check `stale` — fresh solutions can be trusted.
-4. Instrument 1-2 files, not 10. Narrow first.
+4. For logic bugs, pass suspect file paths in the `files` parameter.
 5. ALWAYS run debug_verify before claiming a fix works.
 6. ALWAYS provide `rootCause` in debug_cleanup — it teaches the system.
 7. Run debug_patterns periodically to spot systemic issues.

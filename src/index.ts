@@ -230,6 +230,27 @@ function initCommand(cwd: string): void {
   const h = installHook(cwd);
   if (h.installed) success(h.message);
 
+  // Activation rules — Claude Code loads .claude/rules/*.md into every conversation
+  const rulesDir = join(cwd, ".claude", "rules");
+  if (!existsSync(rulesDir)) mkdirSync(rulesDir, { recursive: true });
+  const rulesPath = join(rulesDir, "debug-toolkit.md");
+  writeFileSync(rulesPath, `# debug-toolkit rules
+
+When debugging, ALWAYS use the debug-toolkit MCP tools instead of manual investigation:
+
+- Runtime error or stack trace → call \`debug_investigate\` with the error output
+- Test failure → call \`debug_investigate\` with the test output
+- Logic/behavior bug ("wrong output", "doesn't match", "off by") → call \`debug_investigate\` with \`files\` parameter pointing to suspect files
+- Before any debugging → call \`debug_recall\` to check if this was solved before
+- After fixing any bug → call \`debug_cleanup\` with diagnosis and rootCause
+
+Do NOT skip debug_investigate and jump to reading code manually.
+The tool provides error classification, source snippets, git context, environment, AND past solutions in one call.
+
+After applying a fix, ALWAYS call \`debug_verify\` to confirm it works before claiming success.
+`);
+  success(`Activation rules ${sym.arrow} ${rulesPath}`);
+
   if (isTauri) {
     section("TAURI SUPPORT");
     info(`${c.green}${sym.check}${c.reset} Rust stack trace parsing (panics + backtraces)`);

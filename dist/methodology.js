@@ -25,6 +25,21 @@ If past solutions are returned, check the \`stale\` field:
 If a \`rootCause\` is included, it tells you exactly which file caused
 the error last time and what was done to fix it. Start there.
 
+### Logic Bugs (no stack trace)
+If the bug is behavioral ("wrong output", "doesn't look right", "values don't match"):
+1. Call \`debug_investigate\` with the problem description in \`error\` AND pass the \`files\` parameter with suspect file paths
+2. The tool will extract source code from those files for comparison
+3. Look for hardcoded values, missing calculations, wrong conditionals, stale state
+4. Logic bugs are the most valuable to record — they're hardest to re-diagnose
+
+Example:
+\`\`\`
+debug_investigate({
+  error: "Camera preview shows wrong FOV, doesn't match actual render",
+  files: ["src/components/Viewport3D.tsx", "src/components/PreviewViewport.tsx"]
+})
+\`\`\`
+
 ### Step 2: Form Hypotheses
 Based on the investigation, form 2-3 theories about the root cause.
 Rank them by likelihood. The most common causes are:
