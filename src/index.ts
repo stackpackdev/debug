@@ -56,27 +56,73 @@ function initCommand(cwd: string): void {
         devCmd = ["npm", "run", "tauri", "--", "dev"];
         success(`Detected ${c.bold}Tauri${c.reset} project: ${c.bold}${pkg.name ?? "unknown"}${c.reset}`);
 
-        // Detect Vite port from vite.config or default
+        // Detect dev server port from vite.config.{ts,js,mts,mjs} or default
         servePort = 1420; // Vite default for Tauri
-        try {
-          const viteConfPath = join(cwd, "vite.config.ts");
-          if (existsSync(viteConfPath)) {
-            const viteConf = readFileSync(viteConfPath, "utf-8");
-            const portMatch = viteConf.match(/port\s*:\s*(\d+)/);
-            if (portMatch) servePort = parseInt(portMatch[1], 10);
-          }
-        } catch {}
+        for (const ext of ["ts", "js", "mts", "mjs"]) {
+          try {
+            const viteConfPath = join(cwd, `vite.config.${ext}`);
+            if (existsSync(viteConfPath)) {
+              const viteConf = readFileSync(viteConfPath, "utf-8");
+              const portMatch = viteConf.match(/port\s*:\s*(\d+)/);
+              if (portMatch) { servePort = parseInt(portMatch[1], 10); break; }
+            }
+          } catch {}
+        }
 
-        // Detect Rust toolchain from tauri script or use default
+        // Build PATH that works across environments:
+        // 1. Current Node binary dir (fnm, nvm, volta, asdf, mise, homebrew, system)
+        // 2. Current process PATH (inherits whatever shell env the user has)
+        // We snapshot the user's actual PATH at init time rather than guessing paths.
+        const currentNodeBin = process.execPath.replace(/[/\\]node(\.exe)?$/, "");
+        const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+        const isWindows = process.platform === "win32";
+        const sep = isWindows ? ";" : ":";
+
+        // Start with current Node, then add Rust paths, then fall back to system
+        const pathParts: string[] = [currentNodeBin];
+
+        // Add cargo bin (cross-platform)
+        const cargoBin = join(home, ".cargo", "bin");
+        if (existsSync(cargoBin)) pathParts.push(cargoBin);
+
+        // Detect active Rust toolchain dynamically instead of hardcoding arch
+        try {
+          const rustcPath = execSync("rustup which rustc 2>/dev/null", { cwd, timeout: 5000 })
+            .toString().trim();
+          if (rustcPath) {
+            const rustcBin = rustcPath.replace(/[/\\]rustc(\.exe)?$/, "");
+            if (!pathParts.includes(rustcBin)) pathParts.push(rustcBin);
+          }
+        } catch {
+          // Fallback: try default stable toolchain
+          try {
+            const defaultToolchain = execSync("rustup default 2>/dev/null", { cwd, timeout: 5000 })
+              .toString().trim().split(/\s/)[0]; // e.g., "stable-aarch64-apple-darwin"
+            if (defaultToolchain) {
+              const toolchainBin = join(home, ".rustup", "toolchains", defaultToolchain, "bin");
+              if (existsSync(toolchainBin)) pathParts.push(toolchainBin);
+            }
+          } catch {}
+        }
+
+        // Platform-appropriate system paths
+        if (isWindows) {
+          pathParts.push(
+            join(process.env.ProgramFiles ?? "C:\\Program Files", "nodejs"),
+            join(process.env.SystemRoot ?? "C:\\Windows", "System32"),
+          );
+        } else {
+          // macOS + Linux: include homebrew (both Intel and ARM Mac), system bins
+          if (existsSync("/opt/homebrew/bin")) pathParts.push("/opt/homebrew/bin"); // ARM Mac
+          if (existsSync("/home/linuxbrew/.linuxbrew/bin")) pathParts.push("/home/linuxbrew/.linuxbrew/bin"); // Linux brew
+          pathParts.push("/usr/local/bin", "/usr/bin", "/bin");
+        }
+
         serveEnv = {
-          PATH: [
-            "/opt/homebrew/bin",
-            join(process.env.HOME ?? "", ".cargo/bin"),
-            join(process.env.HOME ?? "", ".rustup/toolchains/stable-aarch64-apple-darwin/bin"),
-            "/usr/local/bin", "/usr/bin", "/bin",
-          ].join(":"),
+          PATH: [...new Set(pathParts)].filter(Boolean).join(sep),
         };
-        // Check if the tauri script sets RUSTUP_TOOLCHAIN
+
+        // Detect RUSTUP_TOOLCHAIN from tauri script (some projects pin a specific toolchain)
         const tauriScript = pkg.scripts?.["tauri"] ?? "";
         const toolchainMatch = tauriScript.match(/RUSTUP_TOOLCHAIN=(\S+)/);
         if (toolchainMatch) {
@@ -119,19 +165,23 @@ function initCommand(cwd: string): void {
   if (isTauri) {
     // Check Rust toolchain
     try {
-      const rustcVer = execSync("rustc --version 2>/dev/null", {
-        cwd, timeout: 5000,
+      const rustcVer = execSync("rustc --version", {
+        cwd, timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env, ...serveEnv },
       }).toString().trim();
       success(`Rust: ${rustcVer}`);
     } catch {
       warn("rustc not found — Tauri requires the Rust toolchain");
-      info(`  ${c.dim}Fix: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh${c.reset}`);
+      const rustFix = process.platform === "win32"
+        ? "winget install --id Rustlang.Rustup"
+        : "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh";
+      info(`  ${c.dim}Fix: ${rustFix}${c.reset}`);
       preflightOk = false;
     }
 
     // Check @tauri-apps/cli is actually installed in node_modules
-    const tauriCliBin = join(cwd, "node_modules", ".bin", "tauri");
+    const tauriBinName = process.platform === "win32" ? "tauri.cmd" : "tauri";
+    const tauriCliBin = join(cwd, "node_modules", ".bin", tauriBinName);
     if (existsSync(tauriCliBin)) {
       success("@tauri-apps/cli installed");
     } else if (existsSync(join(cwd, "node_modules"))) {
