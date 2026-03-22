@@ -43,6 +43,8 @@ function initCommand(cwd) {
     section("SETUP");
     let devCmd = ["npm", "run", "dev"];
     let isTauri = false;
+    let servePort = null;
+    let serveEnv = null;
     const pkgPath = join(cwd, "package.json");
     if (existsSync(pkgPath)) {
         try {
@@ -52,8 +54,36 @@ function initCommand(cwd) {
             const hasTauriScript = pkg.scripts?.["tauri"];
             if ((hasTauriCli || hasTauriScript) && existsSync(join(cwd, "src-tauri"))) {
                 isTauri = true;
-                devCmd = ["cargo", "tauri", "dev"];
+                // Use npm-installed @tauri-apps/cli, NOT cargo tauri (which may not be installed)
+                devCmd = ["npm", "run", "tauri", "--", "dev"];
                 success(`Detected ${c.bold}Tauri${c.reset} project: ${c.bold}${pkg.name ?? "unknown"}${c.reset}`);
+                // Detect Vite port from vite.config or default
+                servePort = 1420; // Vite default for Tauri
+                try {
+                    const viteConfPath = join(cwd, "vite.config.ts");
+                    if (existsSync(viteConfPath)) {
+                        const viteConf = readFileSync(viteConfPath, "utf-8");
+                        const portMatch = viteConf.match(/port\s*:\s*(\d+)/);
+                        if (portMatch)
+                            servePort = parseInt(portMatch[1], 10);
+                    }
+                }
+                catch { }
+                // Detect Rust toolchain from tauri script or use default
+                serveEnv = {
+                    PATH: [
+                        "/opt/homebrew/bin",
+                        join(process.env.HOME ?? "", ".cargo/bin"),
+                        join(process.env.HOME ?? "", ".rustup/toolchains/stable-aarch64-apple-darwin/bin"),
+                        "/usr/local/bin", "/usr/bin", "/bin",
+                    ].join(":"),
+                };
+                // Check if the tauri script sets RUSTUP_TOOLCHAIN
+                const tauriScript = pkg.scripts?.["tauri"] ?? "";
+                const toolchainMatch = tauriScript.match(/RUSTUP_TOOLCHAIN=(\S+)/);
+                if (toolchainMatch) {
+                    serveEnv.RUSTUP_TOOLCHAIN = toolchainMatch[1];
+                }
             }
             else {
                 if (pkg.scripts?.dev)
@@ -77,10 +107,17 @@ function initCommand(cwd) {
         args: ["-y", "debug-toolkit"],
     };
     // OPTION B: With dev server wrapping (full capture)
-    existing.mcpServers["debug-toolkit-serve"] = {
+    const serveArgs = ["-y", "debug-toolkit", "serve"];
+    if (servePort)
+        serveArgs.push("--port", String(servePort));
+    serveArgs.push("--", ...devCmd);
+    const serveConfig = {
         command: "npx",
-        args: ["-y", "debug-toolkit", "serve", "--", ...devCmd],
+        args: serveArgs,
     };
+    if (serveEnv)
+        serveConfig.env = serveEnv;
+    existing.mcpServers["debug-toolkit-serve"] = serveConfig;
     writeFileSync(mcpPath, JSON.stringify(existing, null, 2) + "\n");
     success(`MCP config ${sym.arrow} ${mcpPath}`);
     // Hook
