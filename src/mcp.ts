@@ -24,6 +24,8 @@ import { investigate, isVisualError } from "./context.js";
 import { validateCommand } from "./security.js";
 import { remember, recall, memoryStats, detectPatterns, type CausalLink } from "./memory.js";
 import { METHODOLOGY } from "./methodology.js";
+import { runLighthouse, compareSnapshots } from "./perf.js";
+import type { PerfSnapshot } from "./session.js";
 
 let cwd = process.cwd();
 export function setCwd(dir: string): void { cwd = dir; }
@@ -34,7 +36,7 @@ function text(data: unknown) {
 
 export function createMcpServer(): McpServer {
   const server = new McpServer(
-    { name: "debug-toolkit", version: "0.5.0" },
+    { name: "debug-toolkit", version: "0.6.0" },
     { capabilities: { tools: {}, resources: {} } },
   );
 
@@ -492,6 +494,76 @@ Use this periodically to understand your project's debugging health.`,
         : patterns.length > 0
           ? `Top finding: ${patterns[0].message}`
           : undefined,
+    });
+  });
+
+  // ━━━ TOOL: debug_perf ━━━
+  server.registerTool("debug_perf", {
+    title: "Performance Snapshot",
+    description: `Capture a Lighthouse performance snapshot for a URL.
+Returns Web Vitals: LCP, CLS, INP, Total Blocking Time, Speed Index.
+Call before and after a fix to compare performance impact.
+Requires Chrome installed. Gracefully skips if unavailable.`,
+    inputSchema: {
+      sessionId: z.string(),
+      url: z.string().describe("URL to audit (e.g., 'http://localhost:3000')"),
+      phase: z.enum(["before", "after"]).optional().describe("Label this snapshot as before or after a fix (default: before)"),
+    },
+  }, async ({ sessionId, url, phase }) => {
+    const session = loadSession(cwd, sessionId);
+    const snapshotPhase = phase ?? "before";
+
+    const metrics = await runLighthouse(url);
+    if (!metrics) {
+      return text({
+        error: "Lighthouse failed — Chrome may not be installed or the URL is unreachable.",
+        nextStep: "Ensure Chrome is installed and the dev server is running, then retry.",
+      });
+    }
+
+    const snapshot: PerfSnapshot = {
+      id: `perf_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      url,
+      metrics,
+      phase: snapshotPhase,
+    };
+
+    if (!session.perfSnapshots) session.perfSnapshots = [];
+    session.perfSnapshots.push(snapshot);
+    saveSession(cwd, session);
+
+    // Compare with previous snapshot if this is an "after" snapshot
+    let comparison: Record<string, unknown> | undefined;
+    if (snapshotPhase === "after") {
+      const beforeSnapshot = session.perfSnapshots.find((s) => s.phase === "before");
+      if (beforeSnapshot) {
+        const diff = compareSnapshots(beforeSnapshot.metrics, metrics);
+        comparison = {
+          lcpChange: diff.lcp !== null ? `${diff.lcp > 0 ? "+" : ""}${Math.round(diff.lcp)}ms` : null,
+          clsChange: diff.cls !== null ? `${diff.cls > 0 ? "+" : ""}${diff.cls.toFixed(3)}` : null,
+          tbtChange: diff.tbt !== null ? `${diff.tbt > 0 ? "+" : ""}${Math.round(diff.tbt)}ms` : null,
+          improved: diff.improved,
+        };
+      }
+    }
+
+    return text({
+      phase: snapshotPhase,
+      url,
+      metrics: {
+        lcp: metrics.lcp !== null ? `${Math.round(metrics.lcp)}ms` : null,
+        cls: metrics.cls !== null ? metrics.cls.toFixed(3) : null,
+        inp: metrics.inp !== null ? `${Math.round(metrics.inp)}ms` : null,
+        tbt: metrics.tbt !== null ? `${Math.round(metrics.tbt)}ms` : null,
+        speedIndex: metrics.speedIndex !== null ? `${Math.round(metrics.speedIndex)}ms` : null,
+      },
+      comparison,
+      nextStep: snapshotPhase === "before"
+        ? "Apply your fix, then call debug_perf again with phase='after' to compare."
+        : comparison?.improved
+          ? "Performance improved! Proceed with debug_verify to confirm the fix."
+          : "Performance did not improve. Review the metrics and consider a different approach.",
     });
   });
 
