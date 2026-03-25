@@ -3,9 +3,18 @@
 Closed-loop debugging for AI coding agents. One MCP server gives your agent the ability to **see code running** — not just read and write it.
 
 ```
-npx debug-toolkit demo     # see it work (no AI needed)
-npx debug-toolkit init     # install in your project
+npx debug-toolkit demo            # see it work (no AI needed)
+npx debug-toolkit init            # install in your project
+npx debug-toolkit export [path]   # export debug memory as a knowledge pack
+npx debug-toolkit import <path>   # import a knowledge pack into this project
 ```
+
+## What's New in v0.8
+
+- **Confidence scoring** — recall results now include a `confidence` percentage (0–100) for each past fix. Confidence is computed from entry age, file drift since the fix was recorded, and how many times the fix has been successfully applied. Higher confidence = more reliable fix, so agents can prioritize the most trustworthy solutions first.
+- **Proactive memory** — `debug_investigate` now surfaces a `proactiveSuggestion` when a past fix with >80% confidence matches the current error. The suggestion includes the diagnosis, root cause, and a `fixHint` — the agent can apply it directly without running the full investigation pipeline.
+- **Knowledge packs** — export and import debug memory across projects. `npx debug-toolkit export [path]` writes a portable `.json` pack; `npx debug-toolkit import <path>` seeds a project with it. Share hard-won fixes across teams or bootstrap a new repo with known solutions.
+- **Memory archival** — stale, low-confidence entries are automatically archived and excluded from recall results. Archived entries live in `.debug/archive/` and are never deleted, but they stay out of search results to keep recall fast and relevant.
 
 ## What's New in v0.7
 

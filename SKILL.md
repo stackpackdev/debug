@@ -58,13 +58,14 @@ Output includes:
 - `git` — branch, recent changes to relevant files
 - `environment` — Node version, frameworks, env vars (secrets redacted)
 - `pastSolutions` — previous diagnoses for similar errors (with staleness + causal chain)
+- `proactiveSuggestion` — present when a past fix with >80% confidence matches this error. Contains `diagnosis`, `rootCause`, `confidence`, and `fixHint`. Apply directly — skip instrumentation and capture.
 - `nextStep` — what to do next
 - `buildErrors` — array of build/lint errors auto-captured from the dev server (Vite, tsc, webpack, ESLint). Each entry: `{ tool, file, line, code, message }`
 - `visualHint` — present when a visual/CSS bug is detected: `{ isVisualBug, message, suggestedActions }`. Use screenshot tools when this is set.
 - `visualError` — boolean, `true` when the error is classified as a visual/rendering bug
 
 ### debug_recall
-Explicitly search past debug sessions. Returns diagnoses ranked by relevance with staleness info and causal chains.
+Explicitly search past debug sessions. Returns diagnoses ranked by relevance with staleness info, causal chains, and **confidence scores**.
 ```
 Input: { query: "TypeError Cannot read properties email", limit?: 5 }
 ```
@@ -74,6 +75,7 @@ Each match includes:
 - `stale` — whether the referenced files have changed since the diagnosis
 - `staleness` — reason if stale (e.g., "2 file(s) changed in 3 commit(s)")
 - `relevance` — keyword overlap percentage
+- `confidence` — percentage (0–100) indicating how reliable this fix is. Computed from entry age, file drift since the fix was recorded, and how many times the fix has been successfully applied. Higher confidence = more reliable fix.
 
 ### debug_patterns
 Detect patterns across ALL past sessions. No input required.
@@ -164,6 +166,17 @@ Returns Web Vitals:
 
 When `phase` is `"after"`, the response also includes a `comparison` object showing delta and regression/improvement for each metric.
 
+### Knowledge Packs (CLI)
+Export and import debug memory across projects.
+```bash
+npx debug-toolkit export [path]   # Export memory to a .json knowledge pack
+npx debug-toolkit import <path>   # Import a knowledge pack into this project
+```
+Use knowledge packs to share hard-won debug knowledge across teams or seed a new project with known fixes. Exported packs include all diagnoses, causal chains, and confidence metadata.
+
+### Memory Archival (automatic)
+Old low-confidence entries are automatically archived and excluded from recall results. Entries are archived when their confidence score drops below the threshold due to age, file drift, or disuse. Archived entries are stored in `.debug/archive/` and never deleted — they can be manually reviewed but do not appear in search results.
+
 ## MCP Resource
 
 ### debug://methodology
@@ -175,6 +188,7 @@ Always-available debugging methodology. Covers the full workflow, anti-patterns 
 3. Read `nextStep` in every response — it tells you what to do.
 4. If past solutions are found via `debug_recall`, apply the known fix directly without re-investigating. Use `debug_recall` first for recurring errors you've seen before.
 5. If `debug_investigate` returns `triage: "trivial"`, apply the `fixHint` directly — skip instrumentation and capture.
+5a. If `debug_investigate` returns a `proactiveSuggestion` (confidence >80%), apply the suggested fix directly — this is a high-confidence known fix. No further investigation needed.
 6. For logic bugs, pass suspect file paths in the `files` parameter.
 7. ALWAYS run debug_verify before claiming a fix works. It auto-saves the fix to memory on pass.
 8. `debug_cleanup` is optional when no instrumentation was added and `debug_verify` passed. Use it to add a `rootCause` causal chain or remove instrumentation markers.
