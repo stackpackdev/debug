@@ -366,6 +366,37 @@ Use this before cleanup to confirm the fix actually works.`,
     const noErrors = expectNoErrors !== false;
     const passed = exitCode === 0 && (noErrors ? errors.length === 0 : true);
 
+    // Auto-learning: when fix is verified, auto-save diagnosis to memory
+    if (passed && session.problem) {
+      const errorCap = session.captures.find((c) =>
+        (c.data as Record<string, unknown>)?.type === "investigation",
+      );
+      const errorData = errorCap?.data as Record<string, Record<string, string>> | undefined;
+
+      const filesSet = new Set(session.instrumentation.map((i) => basename(i.filePath)));
+      for (const cap of session.captures) {
+        const d = cap.data as Record<string, unknown> | undefined;
+        if (d?.type === "investigation") {
+          for (const key of ["hintFiles", "sourceFiles"] as const) {
+            if (Array.isArray(d[key])) {
+              for (const f of d[key] as string[]) if (typeof f === "string") filesSet.add(f);
+            }
+          }
+        }
+      }
+
+      remember(cwd, {
+        id: session.id,
+        timestamp: new Date().toISOString(),
+        problem: session.problem,
+        errorType: errorData?.error?.type ?? "Unknown",
+        category: errorData?.error?.category ?? "runtime",
+        diagnosis: `Auto-learned: fix verified via "${command}"`,
+        files: [...filesSet],
+        rootCause: null,
+      });
+    }
+
     return text({
       passed,
       exitCode,
@@ -373,7 +404,7 @@ Use this before cleanup to confirm the fix actually works.`,
       errors: errors.slice(0, 5).map((c) => (c.data as Record<string, string>)?.text),
       output: captures.slice(0, 10).map((c) => (c.data as Record<string, string>)?.text),
       nextStep: passed
-        ? "Fix verified! Use debug_cleanup to remove instrumentation and close the session. If this was a visual bug, take a screenshot to confirm the visual fix."
+        ? "Fix verified and auto-saved to memory! Use debug_cleanup to remove instrumentation (optional — diagnosis already recorded)."
         : "Fix failed. Review the errors above and try a different approach.",
     });
   });
