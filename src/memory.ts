@@ -11,8 +11,8 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
 import { computeConfidence, CONFIDENCE_THRESHOLD } from "./confidence.js";
 
 // ━━━ Types ━━━
@@ -260,6 +260,8 @@ function loadStore(cwd: string): MemoryStore {
 
 function saveStore(cwd: string, store: MemoryStore): void {
   const p = memoryPath(cwd);
+  const dir = dirname(p);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const tmp = `${p}.tmp_${process.pid}`;
   writeFileSync(tmp, JSON.stringify(store, null, 2));
   renameSync(tmp, p);
