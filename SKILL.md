@@ -1,7 +1,7 @@
 ---
 name: debug-toolkit
 description: "Closed-loop debugging for AI agents. Use for runtime errors, stack traces, test failures, AND logic/behavior bugs (wrong output, visual mismatch, unexpected values). Provides error classification, source context, git history, cross-session memory with staleness detection and causal chains, and pattern detection. Start every debugging task with debug_investigate."
-tools: ["debug_investigate", "debug_recall", "debug_patterns", "debug_instrument", "debug_capture", "debug_verify", "debug_cleanup", "debug_session"]
+tools: ["debug_investigate", "debug_recall", "debug_patterns", "debug_instrument", "debug_capture", "debug_verify", "debug_cleanup", "debug_session", "debug_perf"]
 ---
 
 # debug-toolkit
@@ -58,6 +58,9 @@ Output includes:
 - `environment` — Node version, frameworks, env vars (secrets redacted)
 - `pastSolutions` — previous diagnoses for similar errors (with staleness + causal chain)
 - `nextStep` — what to do next
+- `buildErrors` — array of build/lint errors auto-captured from the dev server (Vite, tsc, webpack, ESLint). Each entry: `{ tool, file, line, code, message }`
+- `visualHint` — present when a visual/CSS bug is detected: `{ isVisualBug, message, suggestedActions }`. Use screenshot tools when this is set.
+- `visualError` — boolean, `true` when the error is classified as a visual/rendering bug
 
 ### debug_recall
 Explicitly search past debug sessions. Returns diagnoses ranked by relevance with staleness info and causal chains.
@@ -131,6 +134,23 @@ Input: { sessionId }
 ```
 Returns: hypotheses, active instruments, recent captures (summarized).
 
+### debug_perf
+Capture a Lighthouse performance snapshot for a URL. Use `phase` to compare before and after a fix.
+```
+Input: { sessionId, url, phase?: "before" | "after" }
+```
+- Omit `phase` (or use `"before"`) to take a baseline snapshot.
+- Pass `phase: "after"` to compare against the stored baseline.
+
+Returns Web Vitals:
+- `LCP` — Largest Contentful Paint
+- `CLS` — Cumulative Layout Shift
+- `INP` — Interaction to Next Paint
+- `TBT` — Total Blocking Time
+- `speedIndex` — Speed Index
+
+When `phase` is `"after"`, the response also includes a `comparison` object showing delta and regression/improvement for each metric.
+
 ## MCP Resource
 
 ### debug://methodology
@@ -145,3 +165,5 @@ Always-available debugging methodology. Covers the full workflow, anti-patterns 
 6. ALWAYS provide both `diagnosis` AND `rootCause` in debug_cleanup — it teaches the system.
 7. Run debug_patterns periodically to spot systemic issues.
 8. The `sessionId` from debug_investigate must be passed to all subsequent tool calls.
+9. If `visualHint.isVisualBug` is true, use screenshot tools before attempting a fix.
+10. Use debug_perf with `phase: "before"` before a perf fix and `phase: "after"` to confirm improvement.

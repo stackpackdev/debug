@@ -7,6 +7,13 @@ npx debug-toolkit demo     # see it work (no AI needed)
 npx debug-toolkit init     # install in your project
 ```
 
+## What's New in v0.6
+
+- **Build error auto-capture** — Vite, tsc, webpack, and ESLint errors are detected automatically from the dev server. `debug_investigate` now returns a `buildErrors` array so the agent sees compile/lint failures without manual log hunting.
+- **Visual bug detection** — Investigation responses include a `visualHint` field when a CSS or rendering bug is detected. It flags `isVisualBug`, explains the issue, and suggests using screenshot tools before attempting a fix.
+- **Lighthouse performance snapshots** — New `debug_perf` tool captures Web Vitals (LCP, CLS, INP, TBT, Speed Index) for any URL. Supports before/after comparison to confirm performance fixes.
+- **Extended session model** — Sessions now carry visual context (screenshot references) and performance data alongside the existing error, instrumentation, and memory state.
+
 ## See It Work
 
 Run `npx debug-toolkit demo` — creates a temp project with a real bug, walks through the full debug loop, no AI needed:
@@ -250,6 +257,15 @@ Remove ALL instrumentation, verify files are restored, and save the diagnosis + 
 ### debug_session
 
 Lightweight view of current state: hypotheses, active instruments, recent captures.
+
+### debug_perf
+
+Capture a Lighthouse performance snapshot for a URL. Pass `phase: "before"` before a fix and `phase: "after"` to get a comparison.
+
+```
+Input:  { sessionId, url, phase?: "before" | "after" }
+Output: { LCP, CLS, INP, TBT, speedIndex, comparison? }
+```
 
 ## Memory System
 
