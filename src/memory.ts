@@ -424,6 +424,8 @@ export function memoryStats(cwd: string): {
   newestDate: string | null;
   patterns: PatternInsight[];
 } {
+  // Auto-archive stale entries on stats check
+  archiveStaleMemories(cwd);
   const store = loadStore(cwd);
   if (store.entries.length === 0) {
     return { entries: 0, oldestDate: null, newestDate: null, patterns: [] };

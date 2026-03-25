@@ -65,7 +65,9 @@ export function generateSuggestions(patterns: PatternInput[]): Suggestion[] {
 
     if (pattern.type === "hot_file") {
       const file = String(data.file ?? "");
-      const percentage = Number(data.percentage ?? 0);
+      const sessions = Number(data.sessions ?? 0);
+      const total = Number(data.total ?? 0);
+      const percentage = total > 0 ? Math.round(100 * sessions / total) : 0;
 
       suggestions.push({
         category: "refactoring",

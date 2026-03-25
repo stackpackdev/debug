@@ -21,8 +21,8 @@ const AGE_HALF_LIFE_DAYS = 90;
 const DRIFT_HALF_LIFE_COMMITS = 15;
 
 export function computeConfidence(factors: ConfidenceFactors): number {
-  const ageFactor = Math.exp(-0.693 * factors.ageInDays / AGE_HALF_LIFE_DAYS);
-  const driftFactor = Math.exp(-0.693 * factors.fileDriftCommits / DRIFT_HALF_LIFE_COMMITS);
+  const ageFactor = Math.exp(-Math.LN2 * factors.ageInDays / AGE_HALF_LIFE_DAYS);
+  const driftFactor = Math.exp(-Math.LN2 * factors.fileDriftCommits / DRIFT_HALF_LIFE_COMMITS);
 
   let usageFactor = 0.0;
   if (factors.timesRecalled > 0) {

@@ -181,7 +181,7 @@ Start every debugging session with this tool.`,
         diagnosis: s.diagnosis,
         files: s.files,
         relevance: Math.round(s.relevance * 100) + "%",
-        confidence: Math.round((s as any).confidence * 100) + "%",
+        confidence: Math.round(s.confidence * 100) + "%",
         stale: s.staleness.stale,
         staleness: s.staleness.stale ? s.staleness.reason : undefined,
         rootCause: s.rootCause ?? undefined,
@@ -191,15 +191,15 @@ Start every debugging session with this tool.`,
         : `Found ${pastSolutions.length} past solution(s) but all are outdated (code changed). Investigate fresh.`;
 
       // Proactive memory: surface high-confidence matches prominently
-      const highConfidence = pastSolutions.filter((s) => ((s as any).confidence ?? 0) >= 0.8);
+      const highConfidence = pastSolutions.filter((s) => (s.confidence ?? 0) >= 0.8);
       if (highConfidence.length > 0) {
         const top = highConfidence[0];
         response.proactiveSuggestion = {
-          confidence: Math.round(((top as any).confidence ?? 0) * 100) + "%",
+          confidence: Math.round((top.confidence ?? 0) * 100) + "%",
           diagnosis: top.diagnosis,
           files: top.files,
           rootCause: top.rootCause ?? undefined,
-          message: `High-confidence match (${Math.round(((top as any).confidence ?? 0) * 100)}%): "${top.diagnosis}". This fix was verified before — try applying it directly.`,
+          message: `High-confidence match (${Math.round((top.confidence ?? 0) * 100)}%): "${top.diagnosis}". This fix was verified before — try applying it directly.`,
         };
         response.nextStep = `Proactive suggestion: ${top.diagnosis}. Verify with debug_verify after applying.`;
       }
@@ -210,8 +210,11 @@ Start every debugging session with this tool.`,
     }
 
     // Adjust nextStep if build errors found
-    if (buildErrors.length > 0 && !response.nextStep) {
-      response.nextStep = `${buildErrors.length} build error(s) detected from dev server. Review them — they may be the root cause.`;
+    if (buildErrors.length > 0) {
+      const buildMsg = `${buildErrors.length} build error(s) detected from dev server.`;
+      response.nextStep = typeof response.nextStep === "string"
+        ? `${buildMsg} ${response.nextStep}`
+        : buildMsg;
     }
 
     // Visual error advisory — tell agent to use visual tools
