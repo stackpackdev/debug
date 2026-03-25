@@ -26,10 +26,42 @@ export interface InstrumentationRecord {
 export interface Capture {
   id: string;
   timestamp: string;
-  source: "terminal" | "browser-console" | "browser-network" | "browser-error" | "environment" | "tauri-log";
+  source: "terminal" | "browser-console" | "browser-network" | "browser-error" | "environment" | "tauri-log" | "build-error" | "visual" | "perf";
   markerTag: string | null;
   data: unknown;
   hypothesisId: string | null;
+}
+
+export interface ScreenshotRecord {
+  id: string;
+  timestamp: string;
+  tool: "ghost_screenshot" | "preview_screenshot" | "none";
+  reference: string; // file path or base64 data URI
+}
+
+export interface DomSnapshot {
+  timestamp: string;
+  tool: "ghost_read" | "preview_snapshot";
+  elements: Array<{ role: string; name: string; visible: boolean }>;
+}
+
+export interface VisualContext {
+  screenshots: ScreenshotRecord[];
+  domSnapshot: DomSnapshot | null;
+}
+
+export interface PerfSnapshot {
+  id: string;
+  timestamp: string;
+  url: string;
+  metrics: {
+    lcp: number | null;      // Largest Contentful Paint (ms)
+    cls: number | null;      // Cumulative Layout Shift
+    inp: number | null;      // Interaction to Next Paint (ms)
+    tbt: number | null;      // Total Blocking Time (ms)
+    speedIndex: number | null;
+  };
+  phase: "before" | "after";
 }
 
 export interface FileSnapshot {
@@ -49,6 +81,8 @@ export interface DebugSession {
   captures: Capture[];
   snapshots: Record<string, FileSnapshot>;
   diagnosis: string | null;
+  visualContext: VisualContext | null;
+  perfSnapshots: PerfSnapshot[];
   // Performance: pre-built index from markerTag → hypothesisId
   _markerIndex: Record<string, string>;
 }
@@ -101,6 +135,8 @@ export function createSession(cwd: string, problem: string): DebugSession {
     captures: [],
     snapshots: {},
     diagnosis: null,
+    visualContext: null,
+    perfSnapshots: [],
     _markerIndex: {},
   };
   saveSession(cwd, session);
