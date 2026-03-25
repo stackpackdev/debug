@@ -35,4 +35,10 @@ describe("Confidence scoring", () => {
     expect(score).toBeLessThanOrEqual(1.0);
     expect(score).toBeGreaterThanOrEqual(0.0);
   });
+
+  it("should have lower usage factor when recalled but never used", () => {
+    const recalledNotUsed = computeConfidence({ ageInDays: 5, fileDriftCommits: 0, timesRecalled: 10, timesUsed: 0 });
+    const recalledAndUsed = computeConfidence({ ageInDays: 5, fileDriftCommits: 0, timesRecalled: 10, timesUsed: 8 });
+    expect(recalledAndUsed).toBeGreaterThan(recalledNotUsed);
+  });
 });

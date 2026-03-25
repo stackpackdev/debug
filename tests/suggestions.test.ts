@@ -39,4 +39,15 @@ describe("Preventive suggestions", () => {
   it("should return empty for no patterns", () => {
     expect(generateSuggestions([])).toEqual([]);
   });
+
+  it("should suggest regression tests for regressions", () => {
+    const patterns = [{
+      type: "regression" as const,
+      severity: "warning" as const,
+      message: "TypeError reappeared in src/api.ts",
+      data: { errorType: "TypeError", file: "src/api.ts" },
+    }];
+    const suggestions = generateSuggestions(patterns);
+    expect(suggestions.some((s) => s.category === "testing" && s.priority === "high")).toBe(true);
+  });
 });

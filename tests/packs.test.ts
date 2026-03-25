@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { exportPack, importPack, type KnowledgePack } from "../src/packs.js";
 import { remember } from "../src/memory.js";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -44,5 +44,11 @@ describe("Knowledge packs", () => {
     const packPath = join(tmp, "export.json");
     const result = importPack(tmp2, packPath);
     expect(result.total).toBe(1);
+  });
+
+  it("should throw on invalid pack version", () => {
+    const badPack = join(tmp, "bad-version.json");
+    writeFileSync(badPack, JSON.stringify({ version: "99.0", entries: [] }));
+    expect(() => importPack(tmp2, badPack)).toThrow("Unsupported pack version");
   });
 });
