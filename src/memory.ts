@@ -13,7 +13,7 @@
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
-import { computeConfidence, CONFIDENCE_THRESHOLD } from "./confidence.js";
+import { computeConfidence, CONFIDENCE_THRESHOLD, ARCHIVE_THRESHOLD } from "./confidence.js";
 
 // ━━━ Types ━━━
 
@@ -337,8 +337,9 @@ export function recall(
   if (queryTokens.length === 0) return [];
 
   const now = Date.now();
-  const scored = store.entries
-    .filter((entry) => !entry.archived)
+  // Filter out archived entries from recall
+  const activeEntries = store.entries.filter((e) => !e.archived);
+  const scored = activeEntries
     .map((entry) => {
       let hits = 0;
       for (const qt of queryTokens) {
@@ -381,6 +382,37 @@ export function recall(
   }
 
   return results;
+}
+
+/**
+ * Archive memories with confidence below threshold for 30+ days.
+ * Archived memories are excluded from auto-recall.
+ */
+export function archiveStaleMemories(cwd: string): { archived: number } {
+  const store = loadStore(cwd);
+  let archived = 0;
+
+  for (const entry of store.entries) {
+    if (entry.archived) continue;
+    const ageInDays = (Date.now() - new Date(entry.timestamp).getTime()) / (1000 * 60 * 60 * 24);
+    if (ageInDays < 30) continue;
+
+    const staleness = checkStaleness(cwd, entry);
+    const confidence = computeConfidence({
+      ageInDays,
+      fileDriftCommits: staleness.commitsBehind,
+      timesRecalled: entry.timesRecalled ?? 0,
+      timesUsed: entry.timesUsed ?? 0,
+    });
+
+    if (confidence < ARCHIVE_THRESHOLD) {
+      entry.archived = true;
+      archived++;
+    }
+  }
+
+  if (archived > 0) saveStore(cwd, store);
+  return { archived };
 }
 
 /**
