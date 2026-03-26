@@ -12,7 +12,7 @@ import { setCwd, startMcpServer } from "./mcp.js";
 import { exportPack, importPack } from "./packs.js";
 import { installHook } from "./hook.js";
 import { cleanupFromManifest } from "./cleanup.js";
-import { banner, info, success, warn, error, dim, section, kv, ready, printHelp, sym, c, select } from "./cli.js";
+import { banner, info, success, warn, error, dim, section, kv, ready, printHelp, sym, c, select, spinner } from "./cli.js";
 import { detectEnvironment, formatDoctorReport, listInstallable, installIntegration } from "./adapters.js";
 // --- Parse ---
 function parseArgs(argv) {
@@ -446,12 +446,14 @@ async function autoInstallMissing(cwd) {
         return;
     info(`Enabling additional capabilities...\n`);
     for (const intg of autoInstallable) {
-        dim(`  ${intg.installCommand}`);
+        const sp = spinner(`Installing ${intg.name}...`);
         const result = installIntegration(intg.id, cwd);
-        if (result.success)
-            success(`${intg.capability.split("—")[0].trim()}`);
-        else
-            warn(`${intg.name}: ${result.message}`);
+        if (result.success) {
+            sp.stop(`${c.green}${sym.check}${c.reset} ${intg.capability.split("—")[0].trim()}`);
+        }
+        else {
+            sp.stop(`${c.yellow}${sym.bolt}${c.reset} ${intg.name}: ${result.message}`);
+        }
     }
     info("");
 }
@@ -658,13 +660,14 @@ async function installCommand(cwd) {
     }
     info("");
     for (const intg of toInstall) {
-        info(`Enabling ${c.bold}${intg.capability.split("—")[0].trim()}${c.reset}...`);
-        dim(`  ${intg.installCommand}`);
+        const sp = spinner(`Installing ${intg.name}...`);
         const result = installIntegration(intg.id, cwd);
-        if (result.success)
-            success(result.message);
-        else
-            warn(result.message);
+        if (result.success) {
+            sp.stop(`${c.green}${sym.check}${c.reset} ${result.message}`);
+        }
+        else {
+            sp.stop(`${c.yellow}${sym.bolt}${c.reset} ${result.message}`);
+        }
     }
 }
 // --- Main ---

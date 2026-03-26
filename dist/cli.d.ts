@@ -42,6 +42,11 @@ export declare function error(msg: string): void;
 export declare function dim(msg: string): void;
 export declare function section(title: string): void;
 export declare function kv(key: string, value: string): void;
+export interface Spinner {
+    update(msg: string): void;
+    stop(finalMsg?: string): void;
+}
+export declare function spinner(msg: string): Spinner;
 export declare function ready(toolCount: number): void;
 export interface SelectOption {
     label: string;

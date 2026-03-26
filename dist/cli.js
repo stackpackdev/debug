@@ -82,6 +82,36 @@ export function section(title) {
 export function kv(key, value) {
     process.stderr.write(`  ${c.dim}${key}${c.reset} ${value}\n`);
 }
+// --- Animated Spinner ---
+const SPINNER_FRAMES = isColor ? ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] : ["-", "\\", "|", "/"];
+export function spinner(msg) {
+    if (!process.stderr.isTTY) {
+        // Non-interactive: just print and return no-op
+        process.stderr.write(`  ${msg}\n`);
+        return { update() { }, stop() { } };
+    }
+    let frame = 0;
+    let currentMsg = msg;
+    process.stderr.write(c.hideCursor);
+    process.stderr.write(`  ${c.cyan}${SPINNER_FRAMES[0]}${c.reset} ${c.dim}${currentMsg}${c.reset}`);
+    const timer = setInterval(() => {
+        frame = (frame + 1) % SPINNER_FRAMES.length;
+        process.stderr.write(`${c.clearLine}  ${c.cyan}${SPINNER_FRAMES[frame]}${c.reset} ${c.dim}${currentMsg}${c.reset}`);
+    }, 80);
+    return {
+        update(newMsg) {
+            currentMsg = newMsg;
+        },
+        stop(finalMsg) {
+            clearInterval(timer);
+            process.stderr.write(c.clearLine);
+            if (finalMsg) {
+                process.stderr.write(`  ${finalMsg}\n`);
+            }
+            process.stderr.write(c.showCursor);
+        },
+    };
+}
 export function ready(toolCount) {
     process.stderr.write(`\n  ${c.bgBlue}${c.white}${c.bold} READY ${c.reset} ${c.bold}${toolCount} MCP tools available${c.reset}\n\n`);
 }
@@ -181,12 +211,13 @@ export function printHelp() {
 
   ${c.bold}COMMANDS${c.reset}
     ${c.dim}(no args)${c.reset}         guided setup (interactive) or MCP server (non-interactive)
-    init              non-interactive setup
-    doctor            check environment and optional integrations
-    install           install optional integrations (Lighthouse, Chrome, Ghost OS)
-    serve             start dev server with browser capture
-    export            export debug memory to a knowledge pack
-    import            import a knowledge pack
+    init              non-interactive setup (writes .mcp.json, hooks, rules)
+    doctor            check environment + optional integrations
+    install           enable optional capabilities (Lighthouse, Chrome, Ghost OS)
+    serve             start dev server with browser capture (auto-detects dev command)
+    export [path]     export debug memory to a portable knowledge pack
+    import <path>     import a knowledge pack into this project
+    demo              self-contained demo (no AI needed)
 
   ${c.bold}TWO MODES${c.reset}
     ${c.white}Pure MCP${c.reset}   Just add to your MCP config. No wrapper needed.
