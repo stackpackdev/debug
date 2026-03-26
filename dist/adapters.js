@@ -144,9 +144,8 @@ export function formatDoctorReport(caps) {
     });
     checks.push({
         group: "visual", name: "Claude Preview",
-        status: caps.visual.claudePreviewConfigured ? "pass" : "warn",
-        message: caps.visual.claudePreviewConfigured ? "Claude Preview configured" : "Claude Preview not configured",
-        fix: caps.visual.claudePreviewConfigured ? undefined : "Add Claude Preview MCP server to .mcp.json",
+        status: "pass",
+        message: "Built into Claude Code desktop (auto-available)",
     });
     return checks;
 }

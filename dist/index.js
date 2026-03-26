@@ -294,7 +294,7 @@ Manual Read/Grep misses runtime context, browser errors, and cross-session memor
         `| Core debugging | ✓ Installed |`,
         `| Performance (Lighthouse) | ${caps.perf.lighthouseAvailable ? "✓ Available" : "✗ Not installed — \\`npm install -g lighthouse\\`"} |`,
         `| Visual (Ghost OS) | ${caps.visual.ghostOsConfigured ? "✓ Configured" : "✗ Not configured"} |`,
-        `| Visual (Claude Preview) | ${caps.visual.claudePreviewConfigured ? "✓ Configured" : "✗ Not configured"} |`,
+        `| Visual (Claude Preview) | ✓ Built into Claude Code desktop |`,
         "",
         "Run `npx debug-toolkit doctor` to refresh this status.",
     ].join("\n");
