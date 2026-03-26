@@ -17,7 +17,7 @@ npx debug-toolkit
 
 **First time?** The guided setup detects your project, installs MCP config, checks optional integrations, and offers to install missing tools — all interactively.
 
-**Already set up?** You get a menu: check health, re-run setup, start serve mode, or export/import knowledge.
+**Already set up?** You get a menu: check health, re-run setup, start serve mode, install integrations, or export/import knowledge.
 
 **From Claude Code?** The MCP server starts silently — zero change to existing behavior. (Detection: `stdout.isTTY` distinguishes human terminal from MCP client.)
 
@@ -25,6 +25,7 @@ npx debug-toolkit
 
 ```
 npx debug-toolkit init            # non-interactive setup
+npx debug-toolkit install         # install optional integrations (Lighthouse, Chrome)
 npx debug-toolkit doctor          # check environment + optional integrations
 npx debug-toolkit demo            # see it work (no AI needed)
 npx debug-toolkit export [path]   # export debug memory as a knowledge pack
@@ -52,15 +53,49 @@ npx debug-toolkit import <path>   # import a knowledge pack into this project
 | **Ghost OS** | Screenshots, DOM capture for visual bugs | Add `ghost-os` MCP server to `.mcp.json` |
 | **Claude Preview** | Browser preview screenshots and inspection | Add `Claude_Preview` MCP server to `.mcp.json` |
 
-All optional — the toolkit works without any of them. When a tool needs an integration that's missing, you get a clear setup message instead of a cryptic error:
+All optional — the toolkit works without any of them. When a tool needs an integration that's missing, you get a clear setup message instead of a cryptic error.
 
-```json
-{
-  "error": "Lighthouse is not installed.",
-  "setup": "npm install -g lighthouse",
-  "hint": "Run 'npx debug-toolkit doctor' to check your full setup."
-}
+### Installing Integrations
+
+**From the terminal:**
+```bash
+npx debug-toolkit install
 ```
+
+Shows available integrations, marks which can be auto-installed vs manual-only, and lets you pick:
+
+```
+  AVAILABLE INTEGRATIONS
+    1) Lighthouse [auto] — Performance profiling (Web Vitals)
+       npm install -g lighthouse
+    2) Chrome [auto] — Required for Lighthouse headless testing
+       brew install --cask google-chrome
+    3) Ghost OS [manual] — Visual debugging — screenshots, DOM capture
+       Install from https://github.com/ghostwright/ghost-os then run 'ghost setup'
+
+    a) Install all auto-installable (Lighthouse, Chrome)
+
+  Select (numbers comma-separated, 'a' for all, Enter to skip):
+```
+
+**From the agent (mid-conversation):**
+
+The agent can check and install integrations without the user leaving the chat, via the `debug_setup` MCP tool:
+
+```
+debug_setup({ action: "check" })
+→ { available: ["Chrome"], missing: ["Lighthouse", "Ghost OS"], autoInstallable: ["lighthouse"] }
+
+debug_setup({ action: "install", integration: "lighthouse" })
+→ { success: true, message: "Lighthouse installed successfully" }
+```
+
+| Integration | Auto-Install | Agent-Installable | Method |
+|---|---|---|---|
+| Lighthouse | ✅ | ✅ | `npm install -g lighthouse` |
+| Chrome | ✅ (macOS/Linux) | ✅ | `brew install --cask google-chrome` (macOS) |
+| Ghost OS | ❌ Manual | ❌ | Requires download + system permissions |
+| Claude Preview | ✅ Built-in | N/A | Already in Claude Code |
 
 ### Health Check
 
@@ -318,6 +353,18 @@ Input:  { sessionId, url, phase?: "before" | "after" }
 Output: { LCP, CLS, INP, TBT, speedIndex, comparison? }
 ```
 
+### debug_setup
+
+Check and install optional integrations from within the agent conversation. No need to switch to a terminal.
+
+```
+Input:  { action: "check" }
+Output: { integrations: [...], summary: { available, missing, autoInstallable } }
+
+Input:  { action: "install", integration: "lighthouse" }
+Output: { success: true, message: "Lighthouse installed successfully" }
+```
+
 ## Memory System
 
 debug-toolkit learns from every session. The memory system is designed to scale:
@@ -366,7 +413,7 @@ debug-toolkit learns from every session. The memory system is designed to scale:
 ## Testing
 
 ```bash
-npm test                    # 71 tests across 16 files
+npm test                    # 75 tests across 17 files
 npm run test:watch          # watch mode
 npx debug-toolkit demo     # full workflow with real bug
 npx debug-toolkit doctor   # verify environment setup
@@ -378,15 +425,15 @@ npx debug-toolkit doctor   # verify environment setup
 
 ```
 src/
-  index.ts         — CLI entry (guided setup, init, doctor, serve, export, import)
-  mcp.ts           — 10 tools + 1 resource + MCP server + capability detection
+  index.ts         — CLI entry (guided setup, init, install, doctor, serve, export, import)
+  mcp.ts           — 11 tools + 1 resource + MCP server + capability detection
   context.ts       — Investigation engine (stack parsing, source, git, env)
   memory.ts        — WAL-backed memory with inverted index + staleness + patterns
   capture.ts       — Ring buffers, terminal pipe, build error parsing, Tauri logs
   session.ts       — Data model, atomic persistence, visual + perf context
   instrument.ts    — Language-aware instrumentation (JS/TS/Py/Go/Rust)
   cleanup.ts       — Single-pass marker removal with verification
-  adapters.ts      — Environment + capability detection (Ghost OS, Preview, Lighthouse)
+  adapters.ts      — Environment detection, capability checks, integration installer
   triage.ts        — Error complexity classification (trivial/medium/complex)
   suggestions.ts   — Preventive suggestions from debug patterns
   confidence.ts    — Memory confidence scoring (age, drift, usage)
@@ -414,8 +461,10 @@ src/
 - Deferred archival (1hr cooldown), physical purge to monthly archive files
 - Budget overflow guard with nuclear fallback
 - `npx debug-toolkit doctor` — environment health check
-- Guided interactive setup via `npx debug-toolkit`
-- Capability-aware runtime (visual hints + perf pre-checks)
+- `npx debug-toolkit install` — interactive integration installer (Lighthouse, Chrome)
+- `debug_setup` MCP tool — agent can check/install integrations mid-conversation
+- Guided interactive setup via `npx debug-toolkit` (TTY-aware)
+- Capability-aware runtime (visual hints + perf pre-checks adapt to what's installed)
 - Dynamic SKILL.md capabilities table
 
 ### v0.9.0 — Performance + Observability
