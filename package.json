@@ -25,6 +25,9 @@
     "developer-tools"
   ],
   "license": "MIT",
+  "engines": {
+    "node": ">=20.19.0 || >=22.12.0"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.28.0",
     "http-proxy": "^1.18.1",
