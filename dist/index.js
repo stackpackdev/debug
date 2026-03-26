@@ -243,42 +243,52 @@ function initCommand(cwd) {
     const rulesPath = join(rulesDir, "debug-toolkit.md");
     writeFileSync(rulesPath, `# debug-toolkit — activation rules
 
-## MANDATORY: Use debug_investigate FIRST for ANY bug or issue
+## MANDATORY: Call debug_investigate as your FIRST tool call for ANY bug
 
-Call debug_investigate BEFORE reading code manually with Read/Grep/Agent.
-This applies to ALL of these — not just runtime errors:
+When the user reports a bug, error, issue, or asks you to review/check/fix anything:
 
-- Stack trace or runtime error → debug_investigate({ error: "<stack trace>" })
-- Test failure → debug_investigate({ error: "<failure output>" })
-- Layout bug ("overlaps", "misaligned", "collapses", "overflows", "broken on resize")
-  → debug_investigate({ error: "description", files: ["suspect.tsx", "styles.css"] })
-- Visual glitch ("flickers", "wrong color", "disappears", "looks wrong")
-  → debug_investigate({ error: "description", files: [...] })
-- Wrong behavior ("should X but does Y", "doesn't work", "unexpected value")
-  → debug_investigate({ error: "description", files: [...] })
-- Performance issue ("slow", "laggy", "jank")
-  → debug_investigate({ error: "description" }) then debug_perf for metrics
-- Any bug report from the user → debug_investigate({ error: "user's description", files: [...] })
+1. Call debug_investigate FIRST — before Read, Grep, Explore, or any other tool
+2. It returns runtime context you CANNOT get by reading files:
+   - Live terminal output (Rust panics, warnings, compilation errors)
+   - Browser console (console.error, failed fetches, IPC errors)
+   - Build errors from Vite/tsc/webpack
+   - Past solutions from cross-session memory
+   - Git context showing what recently changed
+3. THEN read code if needed — but start with the toolkit
 
-## SKIP toolkit ONLY for:
-- Single-character typos with an obvious fix
-- The user explicitly tells you the fix and just wants you to apply it
+This is not optional. Reading source code for debugging is like debugging blind.
+The toolkit sees what's happening at runtime.
+
+## Trigger phrases — use debug_investigate when the user says:
+
+- "bug", "error", "issue", "crash", "panic", "broken", "fails"
+- "fix", "debug", "investigate", "diagnose", "troubleshoot"
+- "review errors", "review issues", "check the app", "what's wrong"
+- "doesn't work", "wrong", "unexpected", "should X but does Y"
+- "overlap", "misaligned", "layout", "visual", "UI", "display"
+- "slow", "laggy", "performance"
+- Or when you see errors/warnings in any output
+
+## How to call it:
+
+\`\`\`
+# Runtime error with stack trace
+debug_investigate({ error: "<paste stack trace>" })
+
+# Behavior/layout/visual bug
+debug_investigate({ error: "description of problem", files: ["suspect-file.tsx"] })
+
+# Review running app for issues
+debug_investigate({ error: "Review all errors and warnings in the running app" })
+\`\`\`
 
 ## After fixing: ALWAYS verify
 Call debug_verify({ sessionId, command: "npm test" }) before claiming a fix works.
 
-## Visual bugs: capture what the user sees
-If debug_investigate returns visualHint.isVisualBug, call debug_visual to capture
-screenshots before and after fixing.
-
-## Performance bugs: measure before and after
-Call debug_perf({ sessionId, url, phase: "before" }) before fixing,
-then debug_perf({ sessionId, url, phase: "after" }) to confirm improvement.
-
-## WHY use the toolkit instead of manual exploration?
-debug_investigate returns error classification, source code, git context, build errors,
-browser state, past solutions, and auto-captures visual state — all in one call.
-Manual Read/Grep misses runtime context, browser errors, and cross-session memory.
+## SKIP toolkit ONLY for:
+- Single-character typos with an obvious fix
+- The user explicitly tells you the fix and just wants you to apply it
+- New feature requests with no existing bug
 `);
     success(`Activation rules ${sym.arrow} ${rulesPath}`);
     // Detect environment capabilities (used for doctor output)
