@@ -2,6 +2,20 @@
  * Terminal UI utilities — colors, symbols, formatting.
  * Zero dependencies. Works in any terminal.
  */
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+function getVersion() {
+    try {
+        const dir = dirname(fileURLToPath(import.meta.url));
+        const pkg = JSON.parse(readFileSync(join(dir, "..", "package.json"), "utf-8"));
+        return pkg.version ?? "0.0.0";
+    }
+    catch {
+        return "0.0.0";
+    }
+}
+const VERSION = getVersion();
 const isColor = process.env.NO_COLOR === undefined && process.stderr.isTTY;
 // --- ANSI colors ---
 const c = {
@@ -34,7 +48,7 @@ export const sym = {
 export function banner() {
     const lines = [
         "",
-        `  ${c.bold}${c.cyan}debug-toolkit${c.reset} ${c.dim}v0.5.0${c.reset}`,
+        `  ${c.bold}${c.cyan}debug-toolkit${c.reset} ${c.dim}v${VERSION}${c.reset}`,
         `  ${c.dim}closed-loop debugging for AI agents${c.reset}`,
         "",
     ];
@@ -66,7 +80,7 @@ export function ready(toolCount) {
 }
 export function printHelp() {
     console.log(`
-  ${c.bold}${c.cyan}debug-toolkit${c.reset} ${c.dim}v0.5.0${c.reset}
+  ${c.bold}${c.cyan}debug-toolkit${c.reset} ${c.dim}v${VERSION}${c.reset}
   ${c.dim}Closed-loop debugging for AI agents${c.reset}
 
   ${c.bold}QUICK START${c.reset}
