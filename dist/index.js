@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn, execSync } from "node:child_process";
 import { resolve, join, dirname } from "node:path";
+import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -409,7 +410,6 @@ function doctorCommand(cwd) {
 }
 // --- Interactive Prompts (zero dependencies) ---
 function ask(question) {
-    const { createInterface } = require("node:readline");
     const rl = createInterface({ input: process.stdin, output: process.stderr });
     return new Promise((resolve) => {
         rl.question(question, (answer) => {

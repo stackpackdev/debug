@@ -2,6 +2,7 @@
 
 import { spawn, execSync } from "node:child_process";
 import { resolve, join, dirname } from "node:path";
+import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -410,7 +411,6 @@ function doctorCommand(cwd: string): void {
 // --- Interactive Prompts (zero dependencies) ---
 
 function ask(question: string): Promise<string> {
-  const { createInterface } = require("node:readline") as typeof import("node:readline");
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   return new Promise((resolve) => {
     rl.question(question, (answer: string) => {
