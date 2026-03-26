@@ -47,11 +47,14 @@ export declare function formatDoctorReport(caps: EnvironmentCapabilities): Docto
 export interface InstallableIntegration {
     id: string;
     name: string;
+    capability: string;
+    packageName: string;
     description: string;
     available: boolean;
     autoInstallable: boolean;
     installCommand: string | null;
     manualSteps: string | null;
+    diskSize: string;
 }
 export declare function listInstallable(caps: EnvironmentCapabilities): InstallableIntegration[];
 export declare function installIntegration(id: string, cwd: string): {

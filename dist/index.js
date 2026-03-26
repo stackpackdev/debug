@@ -417,28 +417,31 @@ function ask(question) {
     });
 }
 // --- Menu Options ---
-const MENU_OPTIONS = [
-    {
-        label: "Install optional integrations",
-        desc: "Add Lighthouse, Chrome, or Ghost OS for perf profiling and visual debugging.",
-        detail: "Installs open-source tools (~200MB). You can remove them anytime.",
-    },
-    {
-        label: "Start dev server with capture",
-        desc: "Wraps your dev server to auto-capture browser console, network, and build errors.",
-        detail: "Launches your dev command behind an HTTP proxy. Stop anytime with Ctrl+C.",
-    },
-    {
-        label: "Check setup health",
-        desc: "Verify your environment — shows what's working and what's missing with fix commands.",
-        detail: "Quick scan of Node, Git, Lighthouse, Chrome, Ghost OS, and Claude Preview.",
-    },
-    {
-        label: "Re-run setup",
-        desc: "Regenerate MCP config, hooks, and activation rules from scratch.",
-        detail: "Use after moving the project, updating Node, or if something looks broken.",
-    },
-];
+function buildMenuOptions(cwd) {
+    const devCmd = detectDevCommand(cwd);
+    return [
+        {
+            label: "Enable more capabilities",
+            desc: "Add performance profiling and visual debugging to your agent's toolkit.",
+            detail: "Checks what's missing and lets you enable it. ~200MB total, removable anytime.",
+        },
+        {
+            label: "Start dev server with capture",
+            desc: `Runs ${c.bold}${devCmd}${c.reset} with browser console, network, and build error capture.`,
+            detail: "Launches behind an HTTP proxy with auto-capture. Stop anytime with Ctrl+C.",
+        },
+        {
+            label: "Check setup health",
+            desc: "Verify your environment — shows what's working and what's missing.",
+            detail: "Quick scan of Node, Git, Lighthouse, Chrome, Ghost OS, and Claude Preview.",
+        },
+        {
+            label: "Re-run setup",
+            desc: "Regenerate MCP config, hooks, and activation rules from scratch.",
+            detail: "Use after moving the project, updating Node, or if something looks broken.",
+        },
+    ];
+}
 // --- Guided Setup (TTY entrypoint) ---
 async function guidedSetup(cwd) {
     banner();
@@ -500,7 +503,7 @@ async function guidedSetup(cwd) {
 async function mainMenu(cwd) {
     // Menu loop — keeps returning to menu after each action
     while (true) {
-        const choice = await select("What would you like to do?", MENU_OPTIONS);
+        const choice = await select("What would you like to do?", buildMenuOptions(cwd));
         if (choice === -1) {
             // Escape or Ctrl+C — exit gracefully
             info(`${c.dim}Run ${c.reset}npx debug-toolkit${c.dim} anytime to come back.${c.reset}\n`);
@@ -524,25 +527,26 @@ async function mainMenu(cwd) {
         info("");
     }
 }
-async function guidedServe(cwd) {
-    let defaultCmd = "npm run dev";
+function detectDevCommand(cwd) {
     const pkgPath = join(cwd, "package.json");
     if (existsSync(pkgPath)) {
         try {
             const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
             if (pkg.scripts?.dev)
-                defaultCmd = "npm run dev";
-            else if (pkg.scripts?.start)
-                defaultCmd = "npm start";
-            else if (pkg.scripts?.serve)
-                defaultCmd = "npm run serve";
+                return "npm run dev";
+            if (pkg.scripts?.start)
+                return "npm start";
+            if (pkg.scripts?.serve)
+                return "npm run serve";
         }
         catch { /* skip */ }
     }
-    const cmd = await ask(`  ${c.dim}Dev command [${defaultCmd}]: ${c.reset}`);
-    const finalCmd = cmd || defaultCmd;
-    info(`Starting: npx debug-toolkit serve -- ${finalCmd}\n`);
-    const child = spawn(process.execPath, [process.argv[1], "serve", "--", ...finalCmd.split(" ")], {
+    return "npm run dev";
+}
+async function guidedServe(cwd) {
+    const devCmd = detectDevCommand(cwd);
+    info(`Starting: ${c.bold}npx debug-toolkit serve -- ${devCmd}${c.reset}\n`);
+    const child = spawn(process.execPath, [process.argv[1], "serve", "--", ...devCmd.split(" ")], {
         stdio: "inherit",
         cwd,
     });
@@ -571,65 +575,89 @@ async function guidedImport(cwd) {
 }
 // --- Install ---
 async function installCommand(cwd) {
-    banner();
     const caps = detectEnvironment(cwd);
     const integrations = listInstallable(caps);
+    const available = integrations.filter((i) => i.available);
     const missing = integrations.filter((i) => !i.available);
+    const installable = missing.filter((i) => i.autoInstallable);
+    // Show what's already enabled
+    if (available.length > 0) {
+        section("ENABLED");
+        for (const intg of available) {
+            success(`${c.bold}${intg.capability.split("—")[0].trim()}${c.reset} ${c.dim}(${intg.packageName})${c.reset}`);
+        }
+    }
+    // Claude Preview note
+    info("");
+    dim("  Claude Code Preview is supported automatically when using Claude Code desktop.");
     if (missing.length === 0) {
-        success("All integrations are available!");
-        info("Run 'npx debug-toolkit doctor' for full details.");
+        info("");
+        success("All capabilities are enabled!");
         return;
     }
-    section("AVAILABLE INTEGRATIONS");
-    for (let i = 0; i < missing.length; i++) {
-        const intg = missing[i];
-        const tag = intg.autoInstallable ? c.green + "auto" + c.reset : c.yellow + "manual" + c.reset;
-        info(`  ${c.cyan}${i + 1}${c.reset}) ${c.bold}${intg.name}${c.reset} [${tag}] — ${intg.description}`);
+    // Build selector options — "Enable all" first, then individual
+    const selectorOptions = [];
+    if (installable.length > 1) {
+        const totalSize = installable.map((i) => i.diskSize).join(" + ");
+        selectorOptions.push({
+            label: `Enable all capabilities (${installable.map((i) => i.name).join(", ")})`,
+            desc: `Installs everything needed for full performance + visual debugging.`,
+            detail: `Disk space: ${totalSize}. All open-source. Remove anytime with npm/brew uninstall.`,
+        });
+    }
+    for (const intg of missing) {
         if (intg.autoInstallable) {
-            dim(`     ${intg.installCommand}`);
+            selectorOptions.push({
+                label: intg.capability.split("—")[0].trim(),
+                desc: `${intg.packageName} — ${intg.description}`,
+                detail: `Runs: ${c.dim}${intg.installCommand}${c.reset} (${intg.diskSize})`,
+            });
         }
         else {
-            dim(`     ${intg.manualSteps}`);
+            selectorOptions.push({
+                label: intg.capability.split("—")[0].trim(),
+                desc: `${intg.packageName} — ${intg.description}`,
+                detail: `${c.yellow}Manual:${c.reset} ${intg.manualSteps}`,
+            });
         }
     }
-    const autoInstallable = missing.filter((i) => i.autoInstallable);
-    if (autoInstallable.length === 0) {
-        info("");
-        info("No auto-installable integrations available. Follow manual steps above.");
-        return;
-    }
+    selectorOptions.push({
+        label: "Skip for now",
+        desc: "You can enable these anytime from this menu.",
+        detail: "",
+    });
+    section("CAPABILITIES TO ENABLE");
     info("");
-    info(`  ${c.cyan}a${c.reset}) Install all auto-installable (${autoInstallable.map((i) => i.name).join(", ")})`);
-    const answer = await ask(`\n  ${c.dim}Select (numbers comma-separated, 'a' for all, Enter to skip): ${c.reset}`);
-    if (!answer) {
-        info("Skipped.");
+    const choice = await select("What would you like to enable?", selectorOptions);
+    if (choice === -1 || choice === selectorOptions.length - 1) {
+        // Esc or "Skip for now"
         return;
     }
     let toInstall;
-    if (answer.toLowerCase() === "a") {
-        toInstall = autoInstallable;
+    if (installable.length > 1 && choice === 0) {
+        // "Enable all"
+        toInstall = installable;
     }
     else {
-        const indices = answer.split(",").map((s) => parseInt(s.trim(), 10) - 1).filter((n) => !isNaN(n));
-        toInstall = indices
-            .map((i) => missing[i])
-            .filter((intg) => intg !== undefined && intg.autoInstallable);
-    }
-    if (toInstall.length === 0) {
-        info("Nothing to install.");
-        return;
+        // Individual choice — offset by 1 if "Enable all" was shown
+        const offset = installable.length > 1 ? 1 : 0;
+        const intg = missing[choice - offset];
+        if (!intg || !intg.autoInstallable) {
+            warn(`${missing[choice - offset]?.name ?? "This"} requires manual setup.`);
+            return;
+        }
+        toInstall = [intg];
     }
     info("");
     for (const intg of toInstall) {
-        info(`Installing ${c.bold}${intg.name}${c.reset}...`);
+        info(`Enabling ${c.bold}${intg.capability.split("—")[0].trim()}${c.reset}...`);
+        dim(`  ${intg.installCommand}`);
         const result = installIntegration(intg.id, cwd);
         if (result.success)
             success(result.message);
         else
             warn(result.message);
     }
-    info("");
-    info("Run 'npx debug-toolkit doctor' to verify.");
 }
 // --- Main ---
 async function main() {
