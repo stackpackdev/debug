@@ -420,10 +420,11 @@ function ask(question: string): Promise<string> {
   });
 }
 
-async function askChoice(question: string, options: Array<{ key: string; label: string }>): Promise<string> {
+async function askChoice(question: string, options: Array<{ key: string; label: string; desc?: string }>): Promise<string> {
   info(question);
   for (const opt of options) {
     info(`  ${c.cyan}${opt.key}${c.reset}) ${opt.label}`);
+    if (opt.desc) info(`     ${c.dim}${opt.desc}${c.reset}`);
   }
   const answer = await ask(`\n  ${c.dim}Enter choice [${options[0].key}]: ${c.reset}`);
   const match = options.find((o) => o.key === answer.toLowerCase());
@@ -441,20 +442,20 @@ async function guidedSetup(cwd: string): Promise<void> {
   if (mcpExists) {
     info("debug-toolkit is already set up in this project.\n");
     const choice = await askChoice("What would you like to do?", [
-      { key: "1", label: "Check setup health (doctor)" },
-      { key: "2", label: "Re-run setup" },
-      { key: "3", label: "Start dev server with capture" },
-      { key: "4", label: "Export debug knowledge" },
-      { key: "5", label: "Import debug knowledge" },
-      { key: "6", label: "Install optional integrations" },
+      { key: "1", label: "Install optional integrations",
+        desc: "Add Lighthouse, Chrome, or Ghost OS for performance profiling and visual debugging." },
+      { key: "2", label: "Start dev server with capture",
+        desc: "Wraps your dev server to auto-capture browser console, network, and build errors." },
+      { key: "3", label: "Check setup health (doctor)",
+        desc: "Verify your environment — shows what's working and what's missing with fix commands." },
+      { key: "4", label: "Re-run setup",
+        desc: "Regenerate MCP config, hooks, and rules. Use after moving the project or updating Node." },
     ]);
     switch (choice) {
-      case "1": doctorCommand(cwd); break;
-      case "2": initCommand(cwd); break;
-      case "3": await guidedServe(cwd); break;
-      case "4": await guidedExport(cwd); break;
-      case "5": await guidedImport(cwd); break;
-      case "6": await installCommand(cwd); break;
+      case "1": await installCommand(cwd); break;
+      case "2": await guidedServe(cwd); break;
+      case "3": doctorCommand(cwd); break;
+      case "4": initCommand(cwd); break;
     }
     return;
   }
