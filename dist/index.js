@@ -281,68 +281,13 @@ browser state, past solutions, and auto-captures visual state — all in one cal
 Manual Read/Grep misses runtime context, browser errors, and cross-session memory.
 `);
     success(`Activation rules ${sym.arrow} ${rulesPath}`);
-    // Detect environment capabilities (used for SKILL.md + optional output)
+    // Detect environment capabilities (used for doctor output)
     const caps = detectEnvironment(cwd);
     const checks = formatDoctorReport(caps);
-    // Build capabilities table for SKILL.md
-    const capsTable = [
-        "",
-        "## Available Capabilities",
-        "",
-        "| Capability | Status |",
-        "|---|---|",
-        `| Core debugging | ✓ Installed |`,
-        `| Performance (Lighthouse) | ${caps.perf.lighthouseAvailable ? "✓ Available" : "✗ Not installed — \\`npm install -g lighthouse\\`"} |`,
-        `| Visual (Ghost OS) | ${caps.visual.ghostOsConfigured ? "✓ Configured" : "✗ Not configured"} |`,
-        `| Visual (Claude Preview) | ✓ Built into Claude Code desktop |`,
-        "",
-        "Run `npx debug-toolkit doctor` to refresh this status.",
-    ].join("\n");
-    // Install SKILL.md — Claude Code auto-discovers skills from .claude/skills/
-    const skillDir = join(cwd, ".claude", "skills", "debug-toolkit");
-    if (!existsSync(skillDir))
-        mkdirSync(skillDir, { recursive: true });
-    const skillPath = join(skillDir, "SKILL.md");
-    // Find the SKILL.md from the installed package (dist/../SKILL.md)
-    let skillContent = null;
-    for (const p of [join(__dirname, "..", "SKILL.md"), join(__dirname, "SKILL.md")]) {
-        if (existsSync(p)) {
-            skillContent = readFileSync(p, "utf-8");
-            break;
-        }
-    }
-    if (skillContent) {
-        writeFileSync(skillPath, skillContent + capsTable);
-        success(`Skill installed ${sym.arrow} ${skillPath}`);
-    }
-    else {
-        // Inline fallback — write the essential skill content
-        writeFileSync(skillPath, `---
-name: debug-toolkit
-description: "Closed-loop debugging for AI agents. Use for runtime errors, stack traces, test failures, AND logic/behavior bugs. Start every debugging task with debug_investigate."
-tools: ["debug_investigate", "debug_recall", "debug_patterns", "debug_instrument", "debug_capture", "debug_verify", "debug_cleanup", "debug_session"]
----
-
-# debug-toolkit
-
-You have access to a debugging toolkit via MCP. Start every debugging task with \`debug_investigate\`.
-
-## When to Use
-- Runtime error or stack trace
-- Test failure
-- Wrong output / visual bug / logic bug
-- Bug report from a user
-
-## Workflow
-1. debug_investigate → understand the error + auto-recall past fixes
-2. debug_instrument → add logging if needed
-3. debug_capture → collect runtime output
-4. (apply fix)
-5. debug_verify → confirm the fix works
-6. debug_cleanup → remove markers, save diagnosis to memory
-` + capsTable);
-        success(`Skill installed ${sym.arrow} ${skillPath}`);
-    }
+    // Install/update SKILL.md — Claude Code auto-discovers skills from .claude/skills/
+    updateSkillMd(cwd);
+    const skillPath = join(cwd, ".claude", "skills", "debug-toolkit", "SKILL.md");
+    success(`Skill installed ${sym.arrow} ${skillPath}`);
     if (isTauri) {
         section("TAURI SUPPORT");
         info(`${c.green}${sym.check}${c.reset} Rust stack trace parsing (panics + backtraces)`);
@@ -502,6 +447,70 @@ async function autoInstallMissing(cwd) {
     }
     info("");
 }
+// --- SKILL.md auto-update (runs on every npx dbg / init) ---
+function updateSkillMd(cwd) {
+    const caps = detectEnvironment(cwd);
+    const capsTable = [
+        "",
+        "## Available Capabilities",
+        "",
+        "| Capability | Status |",
+        "|---|---|",
+        `| Core debugging | ✓ Installed |`,
+        `| Performance (Lighthouse) | ${caps.perf.lighthouseAvailable ? "✓ Available" : "✗ Not installed — \\`npm install -g lighthouse\\`"} |`,
+        `| Visual (Ghost OS) | ${caps.visual.ghostOsConfigured ? "✓ Configured" : "✗ Not configured"} |`,
+        `| Visual (Claude Preview) | ✓ Built into Claude Code desktop |`,
+        "",
+        "Run `npx debug-toolkit doctor` to refresh this status.",
+    ].join("\n");
+    const skillDir = join(cwd, ".claude", "skills", "debug-toolkit");
+    if (!existsSync(skillDir))
+        mkdirSync(skillDir, { recursive: true });
+    const skillPath = join(skillDir, "SKILL.md");
+    // Find the SKILL.md from the installed package (dist/../SKILL.md)
+    let skillContent = null;
+    for (const p of [join(__dirname, "..", "SKILL.md"), join(__dirname, "SKILL.md")]) {
+        if (existsSync(p)) {
+            skillContent = readFileSync(p, "utf-8");
+            break;
+        }
+    }
+    const finalContent = skillContent
+        ? skillContent + capsTable
+        : `---
+name: debug-toolkit
+description: "Closed-loop debugging for AI agents. Use for runtime errors, stack traces, test failures, AND logic/behavior bugs. Start every debugging task with debug_investigate."
+tools: ["debug_investigate", "debug_recall", "debug_patterns", "debug_instrument", "debug_capture", "debug_verify", "debug_cleanup", "debug_session"]
+---
+
+# debug-toolkit
+
+You have access to a debugging toolkit via MCP. Start every debugging task with \`debug_investigate\`.
+
+## When to Use
+- Runtime error or stack trace
+- Test failure
+- Wrong output / visual bug / logic bug
+- Bug report from a user
+
+## Workflow
+1. debug_investigate → understand the error + auto-recall past fixes
+2. debug_instrument → add logging if needed
+3. debug_capture → collect runtime output
+4. (apply fix)
+5. debug_verify → confirm the fix works
+6. debug_cleanup → remove markers, save diagnosis to memory
+` + capsTable;
+    // Only write if content changed (avoid unnecessary FS writes)
+    try {
+        const existing = existsSync(skillPath) ? readFileSync(skillPath, "utf-8") : "";
+        if (existing === finalContent)
+            return false;
+    }
+    catch { }
+    writeFileSync(skillPath, finalContent);
+    return true;
+}
 // --- Guided Setup (TTY entrypoint) ---
 async function guidedSetup(cwd) {
     banner();
@@ -509,6 +518,8 @@ async function guidedSetup(cwd) {
     const mcpExists = existsSync(join(cwd, ".mcp.json")) || existsSync(join(cwd, ".claude", "mcp.json"));
     if (mcpExists) {
         success(`Already set up in this project. Ready to use in Claude Code.\n`);
+        // Silently update SKILL.md on every run (picks up new activation rules from package updates)
+        updateSkillMd(cwd);
         // Auto-install missing integrations on every run
         await autoInstallMissing(cwd);
         await mainMenu(cwd);
