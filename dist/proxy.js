@@ -8,6 +8,13 @@ import { onBrowserEvent } from "./capture.js";
 import { createGunzip } from "node:zlib";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INJECTED_SCRIPT_TAG = `<script src="/__debug_toolkit/injected.js"></script>`;
+let injectedScriptCache = null;
+function getInjectedScript() {
+    if (!injectedScriptCache) {
+        injectedScriptCache = readFileSync(join(__dirname, "injected.js"), "utf-8");
+    }
+    return injectedScriptCache;
+}
 export function startProxy(opts) {
     const { targetPort, listenPort } = opts;
     const target = `http://127.0.0.1:${targetPort}`;
@@ -70,9 +77,8 @@ export function startProxy(opts) {
     const server = createServer((req, res) => {
         // Serve our injected script
         if (req.url === "/__debug_toolkit/injected.js") {
-            const scriptPath = join(__dirname, "injected.js");
             try {
-                const script = readFileSync(scriptPath, "utf-8");
+                const script = getInjectedScript();
                 res.writeHead(200, {
                     "Content-Type": "application/javascript",
                     "Cache-Control": "no-cache",

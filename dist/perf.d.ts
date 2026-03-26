@@ -22,7 +22,7 @@ interface MetricDiff {
 /**
  * Extract Web Vitals from Lighthouse JSON output.
  */
-export declare function extractMetrics(lighthouseResult: Record<string, any>): LighthouseMetrics;
+export declare function extractMetrics(lighthouseResult: Record<string, unknown>): LighthouseMetrics;
 /**
  * Compare before/after performance snapshots.
  * Negative diff = improvement (lower is better for all metrics).

@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, readdirSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { saveSession } from "./session.js";
+import { atomicWrite } from "./utils.js";
 // --- Marker removal patterns ---
 // JS/Go: single-line inline markers with /* */ comments
 const INLINE_RE = /[ \t]*\/\*\s*__DBG_START_(\w+)__\s*\*\/.*?\/\*\s*__DBG_END_\1__\s*\*\/[ \t]*\n?/g;
@@ -17,9 +18,7 @@ function removeMarkers(content) {
     return { cleaned, hadMarkers: true };
 }
 function atomicWriteFile(path, data) {
-    const tmp = `${path}.dbg_clean_${process.pid}`;
-    writeFileSync(tmp, data);
-    renameSync(tmp, path);
+    atomicWrite(path, data);
 }
 export function cleanupSession(cwd, session) {
     const errors = [];

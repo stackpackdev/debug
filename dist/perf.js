@@ -9,13 +9,17 @@ import { execFile } from "node:child_process";
  * Extract Web Vitals from Lighthouse JSON output.
  */
 export function extractMetrics(lighthouseResult) {
-    const audits = lighthouseResult?.audits ?? {};
+    const audits = (lighthouseResult?.audits ?? {});
+    const num = (key) => {
+        const v = audits[key]?.numericValue;
+        return typeof v === "number" ? v : null;
+    };
     return {
-        lcp: audits["largest-contentful-paint"]?.numericValue ?? null,
-        cls: audits["cumulative-layout-shift"]?.numericValue ?? null,
-        inp: audits["interaction-to-next-paint"]?.numericValue ?? null,
-        tbt: audits["total-blocking-time"]?.numericValue ?? null,
-        speedIndex: audits["speed-index"]?.numericValue ?? null,
+        lcp: num("largest-contentful-paint"),
+        cls: num("cumulative-layout-shift"),
+        inp: num("interaction-to-next-paint"),
+        tbt: num("total-blocking-time"),
+        speedIndex: num("speed-index"),
     };
 }
 /**

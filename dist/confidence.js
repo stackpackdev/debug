@@ -24,5 +24,5 @@ export function computeConfidence(factors) {
 }
 export const CONFIDENCE_THRESHOLD = 0.3;
 export const ARCHIVE_THRESHOLD = 0.2;
-export const PROACTIVE_THRESHOLD = 0.8;
+const PROACTIVE_THRESHOLD = 0.8;
 //# sourceMappingURL=confidence.js.map

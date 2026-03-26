@@ -15,4 +15,3 @@ export interface ConfidenceFactors {
 export declare function computeConfidence(factors: ConfidenceFactors): number;
 export declare const CONFIDENCE_THRESHOLD = 0.3;
 export declare const ARCHIVE_THRESHOLD = 0.2;
-export declare const PROACTIVE_THRESHOLD = 0.8;

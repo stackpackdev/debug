@@ -138,12 +138,8 @@ function initCommand(cwd) {
                 }
             }
             else {
-                if (pkg.scripts?.dev)
-                    devCmd = ["npm", "run", "dev"];
-                else if (pkg.scripts?.start)
-                    devCmd = ["npm", "start"];
-                else if (pkg.scripts?.serve)
-                    devCmd = ["npm", "run", "serve"];
+                const detected = detectDevCommand(cwd);
+                devCmd = detected.cmd.split(" ");
                 success(`Detected project: ${c.bold}${pkg.name ?? "unknown"}${c.reset}`);
             }
         }
@@ -418,7 +414,7 @@ function ask(question) {
 }
 // --- Menu Options ---
 function buildMenuOptions(cwd) {
-    const devCmd = detectDevCommand(cwd);
+    const { cmd: devCmd } = detectDevCommand(cwd);
     return [
         {
             label: "Start dev server with capture",
@@ -542,19 +538,25 @@ function detectDevCommand(cwd) {
     if (existsSync(pkgPath)) {
         try {
             const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+            // Detect Tauri project
+            const hasTauriCli = pkg.devDependencies?.["@tauri-apps/cli"] || pkg.dependencies?.["@tauri-apps/cli"];
+            const hasTauriScript = pkg.scripts?.["tauri"];
+            if ((hasTauriCli || hasTauriScript) && existsSync(join(cwd, "src-tauri"))) {
+                return { cmd: "npm run tauri -- dev", isTauri: true };
+            }
             if (pkg.scripts?.dev)
-                return "npm run dev";
+                return { cmd: "npm run dev", isTauri: false };
             if (pkg.scripts?.start)
-                return "npm start";
+                return { cmd: "npm start", isTauri: false };
             if (pkg.scripts?.serve)
-                return "npm run serve";
+                return { cmd: "npm run serve", isTauri: false };
         }
         catch { /* skip */ }
     }
-    return "npm run dev";
+    return { cmd: "npm run dev", isTauri: false };
 }
 async function guidedServe(cwd) {
-    const devCmd = detectDevCommand(cwd);
+    const { cmd: devCmd } = detectDevCommand(cwd);
     info(`Starting: ${c.bold}npx debug-toolkit serve -- ${devCmd}${c.reset}\n`);
     const child = spawn(process.execPath, [process.argv[1], "serve", "--", ...devCmd.split(" ")], {
         stdio: "inherit",

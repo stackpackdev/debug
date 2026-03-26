@@ -1,8 +1,19 @@
 /**
  * utils.ts — Shared utilities for memory and pack modules.
  */
-import { existsSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
+import { existsSync, writeFileSync, readFileSync, renameSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+export function getPackageVersion() {
+    try {
+        const dir = dirname(fileURLToPath(import.meta.url));
+        const pkg = JSON.parse(readFileSync(join(dir, "..", "package.json"), "utf-8"));
+        return pkg.version ?? "0.0.0";
+    }
+    catch {
+        return "0.0.0";
+    }
+}
 export function memoryPath(cwd) {
     return join(cwd, ".debug", "memory.json");
 }

@@ -9,7 +9,7 @@
  * Implementation: JSON file + in-memory inverted index.
  * Zero native dependencies. Fast enough for hundreds of sessions.
  */
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { computeConfidence, ARCHIVE_THRESHOLD } from "./confidence.js";
@@ -159,7 +159,7 @@ function compactNow(cwd) {
 // ━━━ Git helpers ━━━
 function getGitSha(cwd) {
     try {
-        return execSync("git rev-parse --short HEAD 2>/dev/null", { cwd, timeout: 3000 })
+        return execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd, timeout: 3000, stdio: "pipe" })
             .toString().trim() || null;
     }
     catch {
@@ -178,7 +178,7 @@ function batchCommitCounts(cwd, baseSha, files) {
     if (files.length === 0)
         return counts;
     try {
-        const result = execSync(`git log --format="" --name-only ${baseSha}..HEAD -- ${files.map(f => `"${f}"`).join(" ")}`, { cwd, timeout: 5000, stdio: ["pipe", "pipe", "pipe"] }).toString();
+        const result = execFileSync("git", ["log", "--format=", "--name-only", `${baseSha}..HEAD`, "--", ...files], { cwd, timeout: 5000, stdio: "pipe" }).toString();
         for (const line of result.split("\n")) {
             const trimmed = line.trim();
             if (trimmed) {

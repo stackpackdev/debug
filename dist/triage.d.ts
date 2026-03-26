@@ -11,9 +11,6 @@
 import { type ErrorClassification } from "./context.js";
 export interface TriageResult {
     level: "trivial" | "medium" | "complex";
-    skipFullPipeline: boolean;
-    skipEnvScan: boolean;
-    skipMemorySearch: boolean;
     fixHint: string | null;
     classification: ErrorClassification;
 }

@@ -39,9 +39,6 @@ export function triageError(errorText) {
         if (test.test(errorText) && userFrames <= 1) {
             return {
                 level: "trivial",
-                skipFullPipeline: true,
-                skipEnvScan: true,
-                skipMemorySearch: true,
                 fixHint: hint,
                 classification,
             };
@@ -51,9 +48,6 @@ export function triageError(errorText) {
     if (userFrames === 0 && classification.type === "Unknown") {
         return {
             level: "complex",
-            skipFullPipeline: false,
-            skipEnvScan: false,
-            skipMemorySearch: false,
             fixHint: null,
             classification,
         };
@@ -62,9 +56,6 @@ export function triageError(errorText) {
     if (userFrames >= 5) {
         return {
             level: "complex",
-            skipFullPipeline: false,
-            skipEnvScan: false,
-            skipMemorySearch: false,
             fixHint: null,
             classification,
         };
@@ -72,9 +63,6 @@ export function triageError(errorText) {
     // Known error type with some stack → medium
     return {
         level: "medium",
-        skipFullPipeline: false,
-        skipEnvScan: true,
-        skipMemorySearch: false,
         fixHint: classification.suggestion || null,
         classification,
     };

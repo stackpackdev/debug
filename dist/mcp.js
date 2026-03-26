@@ -29,7 +29,7 @@ import { explainTriage, explainConfidence } from "./explain.js";
 import { recordOutcome, getTelemetry, getFixRateForError } from "./telemetry.js";
 import { detectEnvironment, listInstallable, installIntegration } from "./adapters.js";
 import { connectToGhostOs, disconnectGhostOs, isGhostConnected, resetConnectionState, takeScreenshot, readScreen, findElements, annotateScreen, } from "./ghost-bridge.js";
-import { saveScreenshot } from "./utils.js";
+import { saveScreenshot, getPackageVersion } from "./utils.js";
 let cwd = process.cwd();
 let envCaps = null;
 export function setCwd(dir) { cwd = dir; }
@@ -54,7 +54,7 @@ function text(data) {
     return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
 }
 export function createMcpServer() {
-    const server = new McpServer({ name: "debug-toolkit", version: "0.8.0" }, { capabilities: { tools: {}, resources: {} } });
+    const server = new McpServer({ name: "debug-toolkit", version: getPackageVersion() }, { capabilities: { tools: {}, resources: {} } });
     // ━━━ RESOURCE: debug_methodology ━━━
     // Always-available debugging methodology. The "hot memory" tier.
     server.registerResource("debug_methodology", "debug://methodology", {
@@ -91,6 +91,7 @@ Start every debugging session with this tool.`,
         }
         // Triage: classify error complexity
         const triage = triageError(errorText);
+        session._triageLevel = triage.level;
         // Fast-path for trivial errors — skip full pipeline
         if (triage.level === "trivial" && triage.fixHint) {
             session.captures.push({
@@ -911,8 +912,8 @@ export async function startMcpServer() {
         connectToGhostOs().catch(() => { }); // Fire and forget
     }
     // Clean shutdown
-    process.on("SIGINT", () => { disconnectGhostOs(); });
-    process.on("SIGTERM", () => { disconnectGhostOs(); });
+    process.on("SIGINT", async () => { await disconnectGhostOs(); process.exit(0); });
+    process.on("SIGTERM", async () => { await disconnectGhostOs(); process.exit(0); });
     const server = createMcpServer();
     const transport = new StdioServerTransport();
     await server.connect(transport);

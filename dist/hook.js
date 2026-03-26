@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync, chmodSync, mkdirSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 const HOOK_MARKER_START = "# >>> debug-toolkit pre-commit check";
 const HOOK_MARKER_END = "# <<< debug-toolkit pre-commit check";
 const HOOK_CONTENT = `
@@ -23,13 +23,16 @@ export function installHook(cwd) {
     // Find .git directory
     let dir = cwd;
     let gitDir = null;
-    while (dir !== "/") {
+    while (true) {
         const candidate = join(dir, ".git");
         if (existsSync(candidate)) {
             gitDir = candidate;
             break;
         }
-        dir = join(dir, "..");
+        const parent = dirname(dir);
+        if (parent === dir)
+            break; // filesystem root reached
+        dir = parent;
     }
     if (!gitDir) {
         return {
@@ -72,13 +75,16 @@ export function installHook(cwd) {
 export function uninstallHook(cwd) {
     let dir = cwd;
     let gitDir = null;
-    while (dir !== "/") {
+    while (true) {
         const candidate = join(dir, ".git");
         if (existsSync(candidate)) {
             gitDir = candidate;
             break;
         }
-        dir = join(dir, "..");
+        const parent = dirname(dir);
+        if (parent === dir)
+            break; // filesystem root reached
+        dir = parent;
     }
     if (!gitDir) {
         return { removed: false, message: "No .git directory found." };
