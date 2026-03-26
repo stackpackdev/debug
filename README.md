@@ -126,8 +126,7 @@ dbg doctor
 
   VISUAL DEBUGGING (optional)
   ✓ Ghost OS configured
-  ✗ Claude Preview not configured
-      Add Claude Preview MCP server to .mcp.json
+  ✓ Built into Claude Code desktop
 ```
 
 ### Capability-Aware Runtime
@@ -183,37 +182,61 @@ Run `dbg demo` — creates a temp project with a real bug, walks through the ful
 
 When an AI agent hits a bug, it reads code and guesses a fix. You run it, paste the error back, the agent guesses again. Repeat 5-8 times.
 
-debug-toolkit eliminates that loop. The agent investigates the error, instruments the code, captures runtime output, verifies the fix, and cleans up — all through MCP tool calls. No copy-pasting. No manual log hunting.
+debug-toolkit eliminates that loop. It captures terminal output, browser console, and build errors from the running app — then serves them to the agent proactively. The agent sees what's happening at runtime, not just what's written in files.
 
 ## How It Works
 
-```
-investigate → instrument → capture → fix → verify → cleanup
+### Two modes
+
+**Serve mode** (recommended) — wraps your dev server to capture everything:
+```bash
+dbg serve -- npm run dev     # web project
+dbg serve -- npm run tauri -- dev  # Tauri project
 ```
 
-One debug session. Full context. Diagnosis saved for next time.
+**Pure MCP mode** — just the tools, no capture:
+```bash
+dbg   # setup only, agent calls tools manually
+```
+
+### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Agent gets error from user                             │
-│  ↓                                                      │
-│  debug_investigate  → error type, source code, git,     │
-│                       environment, past solutions        │
-│  ↓                                                      │
-│  debug_instrument   → adds tagged logging to source     │
-│  ↓                                                      │
-│  debug_capture      → collects runtime output           │
-│  ↓                                                      │
-│  Agent applies fix                                      │
-│  ↓                                                      │
-│  debug_verify       → runs tests, confirms fix          │
-│  ↓                                                      │
-│  debug_cleanup      → removes markers, saves diagnosis  │
-│                       + causal chain to memory           │
-│  ↓                                                      │
-│  Next session: debug_investigate auto-recalls the fix   │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────┐     .debug/live-context.json     ┌──────────────────┐
+│ SERVE PROCESS       │ ──────── writes every 5s ───────→ │ MCP PROCESS      │
+│                     │                                    │                  │
+│ • stdout/stderr     │                                    │ debug://status   │
+│   capture           │                                    │ (live resource)  │
+│ • browser console   │                                    │                  │
+│   via proxy/plugin  │                                    │ debug_investigate│
+│ • build error       │                                    │ (deep analysis)  │
+│   parsing           │                                    │                  │
+└─────────────────────┘                                    └──────────────────┘
 ```
+
+### Agent workflow
+
+```
+1. Read debug://status  → see live terminal/browser/build errors instantly
+2. debug_investigate    → deep analysis + source code + git + past solutions
+3. debug_instrument     → add logging if more info needed
+4. debug_capture        → collect runtime output
+5. (apply fix)
+6. debug_verify         → confirm fix, auto-save to memory
+7. debug_cleanup        → save diagnosis for future sessions
+```
+
+### Tauri / Electron support
+
+For apps with embedded webviews, the HTTP proxy can't inject scripts. debug-toolkit provides a **Vite plugin** that injects console capture directly:
+
+```typescript
+// vite.config.ts — auto-configured during `dbg` setup for Tauri projects
+import debugToolkit from "debug-toolkit/vite-plugin";
+export default defineConfig({ plugins: [debugToolkit()] });
+```
+
+This forwards `console.log/warn/error`, global errors, and failed network requests from the webview back to the toolkit via WebSocket.
 
 ## Setup
 

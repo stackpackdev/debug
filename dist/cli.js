@@ -217,8 +217,13 @@ export function printHelp() {
     ${c.white}Serve${c.reset}      ${c.green}dbg serve -- npm run dev${c.reset}
                ${c.dim}Everything above + browser capture + live activity feed${c.reset}
 
-  ${c.bold}13 TOOLS + 1 RESOURCE${c.reset} ${c.dim}(what the AI agent sees)${c.reset}
-    ${c.cyan}debug_investigate${c.reset}   ${c.bold}Error in ${sym.arrow} full context out${c.reset} ${c.dim}+ auto-recall + triage${c.reset}
+  ${c.bold}TOOLS + RESOURCES${c.reset} ${c.dim}(what the AI agent sees)${c.reset}
+    ${c.white}Resources (live data):${c.reset}
+    ${c.cyan}debug://status${c.reset}      ${c.bold}Live runtime state${c.reset} ${c.dim}— terminal errors, browser console, build errors${c.reset}
+    ${c.dim}debug://methodology${c.reset}  ${c.dim}Debugging guide${c.reset}
+
+    ${c.white}Tools:${c.reset}
+    ${c.cyan}debug_investigate${c.reset}   ${c.bold}Error in ${sym.arrow} full context out${c.reset} ${c.dim}+ runtime context + auto-recall${c.reset}
     ${c.cyan}debug_recall${c.reset}        Search past sessions ${c.dim}(confidence + staleness + explain mode)${c.reset}
     ${c.cyan}debug_patterns${c.reset}      Detect recurring errors, hot files, regressions ${c.dim}+ telemetry${c.reset}
     ${c.cyan}debug_instrument${c.reset}    Add tagged logging ${c.dim}(conditional instrumentation supported)${c.reset}
@@ -229,7 +234,6 @@ export function printHelp() {
     ${c.cyan}debug_perf${c.reset}          Lighthouse Web Vitals ${c.dim}(before/after comparison)${c.reset}
     ${c.cyan}debug_visual${c.reset}        Screenshots + DOM capture ${c.dim}(via Ghost OS)${c.reset}
     ${c.cyan}debug_setup${c.reset}         Check/install integrations ${c.dim}(from agent conversation)${c.reset}
-    ${c.dim}debug://methodology${c.reset}  ${c.dim}Always-available debugging guide (MCP resource)${c.reset}
 
   ${c.bold}SECURITY${c.reset}
     ${c.green}${sym.check}${c.reset} Path traversal protection    ${c.green}${sym.check}${c.reset} Auto-redact secrets
