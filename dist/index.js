@@ -12,11 +12,12 @@ import { exportPack, importPack } from "./packs.js";
 import { installHook } from "./hook.js";
 import { cleanupFromManifest } from "./cleanup.js";
 import { banner, info, success, warn, error, dim, section, kv, ready, printHelp, sym, c } from "./cli.js";
+import { detectEnvironment, formatDoctorReport } from "./adapters.js";
 // --- Parse ---
 function parseArgs(argv) {
     const args = argv.slice(2);
     const cmd = args[0] ?? "mcp"; // DEFAULT: pure MCP server (zero-config!)
-    if (["clean", "init", "demo", "help", "--help", "-h", "mcp", "export", "import"].includes(cmd)) {
+    if (["clean", "init", "doctor", "demo", "help", "--help", "-h", "mcp", "export", "import"].includes(cmd)) {
         return { command: cmd.replace(/^-+/, ""), port: null, childCommand: [] };
     }
     if (cmd !== "serve")
@@ -280,6 +281,23 @@ debug_investigate returns error classification, source code, git diff, environme
 AND past solutions in one call. Trivial errors get fast-path responses in <100ms.
 `);
     success(`Activation rules ${sym.arrow} ${rulesPath}`);
+    // Detect environment capabilities (used for SKILL.md + optional output)
+    const caps = detectEnvironment(cwd);
+    const checks = formatDoctorReport(caps);
+    // Build capabilities table for SKILL.md
+    const capsTable = [
+        "",
+        "## Available Capabilities",
+        "",
+        "| Capability | Status |",
+        "|---|---|",
+        `| Core debugging | ✓ Installed |`,
+        `| Performance (Lighthouse) | ${caps.perf.lighthouseAvailable ? "✓ Available" : "✗ Not installed — \\`npm install -g lighthouse\\`"} |`,
+        `| Visual (Ghost OS) | ${caps.visual.ghostOsConfigured ? "✓ Configured" : "✗ Not configured"} |`,
+        `| Visual (Claude Preview) | ${caps.visual.claudePreviewConfigured ? "✓ Configured" : "✗ Not configured"} |`,
+        "",
+        "Run `npx debug-toolkit doctor` to refresh this status.",
+    ].join("\n");
     // Install SKILL.md — Claude Code auto-discovers skills from .claude/skills/
     const skillDir = join(cwd, ".claude", "skills", "debug-toolkit");
     if (!existsSync(skillDir))
@@ -294,7 +312,7 @@ AND past solutions in one call. Trivial errors get fast-path responses in <100ms
         }
     }
     if (skillContent) {
-        writeFileSync(skillPath, skillContent);
+        writeFileSync(skillPath, skillContent + capsTable);
         success(`Skill installed ${sym.arrow} ${skillPath}`);
     }
     else {
@@ -322,7 +340,7 @@ You have access to a debugging toolkit via MCP. Start every debugging task with 
 4. (apply fix)
 5. debug_verify → confirm the fix works
 6. debug_cleanup → remove markers, save diagnosis to memory
-`);
+` + capsTable);
         success(`Skill installed ${sym.arrow} ${skillPath}`);
     }
     if (isTauri) {
@@ -342,6 +360,52 @@ You have access to a debugging toolkit via MCP. Start every debugging task with 
     dim("");
     info("Restart Claude Code to activate.");
     dim(`Config: ${mcpPath}\n`);
+    // Optional capability check
+    const optionals = checks.filter((c) => c.group !== "core" && c.status === "warn");
+    if (optionals.length > 0) {
+        section("OPTIONAL CAPABILITIES");
+        for (const check of checks.filter((c) => c.group !== "core")) {
+            if (check.status === "pass")
+                success(check.message);
+            else {
+                warn(check.message);
+                if (check.fix)
+                    dim(`    ${check.fix}`);
+            }
+        }
+        info("");
+        dim("  Run 'npx debug-toolkit doctor' anytime to check your setup.");
+    }
+}
+// --- Doctor ---
+function doctorCommand(cwd) {
+    banner();
+    const caps = detectEnvironment(cwd);
+    const checks = formatDoctorReport(caps);
+    const groups = [
+        { title: "CORE", key: "core" },
+        { title: "PERFORMANCE (optional)", key: "perf" },
+        { title: "VISUAL DEBUGGING (optional)", key: "visual" },
+    ];
+    for (const group of groups) {
+        section(group.title);
+        for (const check of checks.filter((c) => c.group === group.key)) {
+            if (check.status === "pass")
+                success(check.message);
+            else if (check.status === "warn") {
+                warn(check.message);
+                if (check.fix)
+                    dim(`    ${check.fix}`);
+            }
+            else {
+                error(check.message);
+                if (check.fix)
+                    dim(`    ${check.fix}`);
+            }
+        }
+    }
+    info("");
+    info("Run 'npx debug-toolkit doctor' anytime to check your setup.");
 }
 // --- Main ---
 async function main() {
@@ -359,6 +423,9 @@ async function main() {
         }
         case "init":
             initCommand(cwd);
+            break;
+        case "doctor":
+            doctorCommand(cwd);
             break;
         case "export": {
             const outPath = process.argv[3] ?? join(cwd, ".debug", "knowledge-pack.json");

@@ -31,8 +31,10 @@ import type { PerfSnapshot } from "./session.js";
 import { fitToBudget, estimateTokens } from "./budget.js";
 import { explainTriage, explainConfidence } from "./explain.js";
 import { recordOutcome, getTelemetry, getFixRateForError } from "./telemetry.js";
+import { detectEnvironment, type EnvironmentCapabilities } from "./adapters.js";
 
 let cwd = process.cwd();
+let envCaps: EnvironmentCapabilities | null = null;
 export function setCwd(dir: string): void { cwd = dir; }
 
 function text(data: unknown) {
@@ -234,16 +236,20 @@ Start every debugging session with this tool.`,
         : buildMsg;
     }
 
-    // Visual error advisory — tell agent to use visual tools
+    // Visual error advisory — tell agent to use visual tools (capability-aware)
     if (visualError) {
+      const tools: string[] = [];
+      if (envCaps?.visual.ghostOsConfigured) tools.push("ghost_screenshot", "ghost_read");
+      if (envCaps?.visual.claudePreviewConfigured) tools.push("preview_screenshot", "preview_snapshot");
+
       response.visualHint = {
         isVisualBug: true,
-        message: "This appears to be a visual/CSS bug. Use ghost_screenshot or preview_screenshot to capture the current visual state, then attach findings to this session.",
-        suggestedActions: [
-          "Take a screenshot with ghost_screenshot or preview_screenshot",
-          "Capture DOM state with ghost_read or preview_snapshot for the affected element",
-          "After fixing, take another screenshot to compare before/after",
-        ],
+        message: tools.length > 0
+          ? `Visual/CSS bug detected. Use ${tools[0]} to capture the current state.`
+          : "Visual/CSS bug detected. No visual tools configured — run 'npx debug-toolkit doctor' for setup.",
+        suggestedActions: tools.length > 0
+          ? [`Take a screenshot with ${tools[0]}`, tools[1] ? `Capture DOM with ${tools[1]}` : "Compare before/after screenshots"]
+          : ["Install Ghost OS or Claude Preview for visual debugging", "Run 'npx debug-toolkit doctor' for setup"],
       };
       // Append to nextStep
       if (typeof response.nextStep === "string") {
@@ -689,6 +695,16 @@ Requires Chrome installed. Gracefully skips if unavailable.`,
       phase: z.enum(["before", "after"]).optional().describe("Label this snapshot as before or after a fix (default: before)"),
     },
   }, async ({ sessionId, url, phase }) => {
+    // Pre-check: is Lighthouse available?
+    if (envCaps && !envCaps.perf.lighthouseAvailable) {
+      return text({
+        error: "Lighthouse is not installed.",
+        setup: "npm install -g lighthouse",
+        chromeRequired: !envCaps.perf.chromeAvailable,
+        hint: "Run 'npx debug-toolkit doctor' to check your full setup.",
+      });
+    }
+
     const session = loadSession(cwd, sessionId);
     const snapshotPhase = phase ?? "before";
 
@@ -779,6 +795,7 @@ Lightweight — returns a summary, not the full capture history.`,
 }
 
 export async function startMcpServer(): Promise<void> {
+  envCaps = detectEnvironment(cwd);
   const server = createMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);

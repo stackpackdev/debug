@@ -72,6 +72,12 @@ export function printHelp() {
   ${c.bold}SETUP${c.reset} ${c.dim}(one time)${c.reset}
     ${c.green}npx debug-toolkit init${c.reset}
 
+  ${c.bold}COMMANDS${c.reset}
+    init              set up debug-toolkit in your project
+    doctor            check environment and optional integrations
+    export            export debug memory to a knowledge pack
+    import            import a knowledge pack
+
   ${c.bold}TWO MODES${c.reset}
     ${c.white}Pure MCP${c.reset}   Just add to your MCP config. No wrapper needed.
                ${c.dim}Agent gets: investigate, instrument, capture, verify, cleanup${c.reset}

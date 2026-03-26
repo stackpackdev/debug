@@ -15,3 +15,32 @@ export interface VisualCapabilities {
 }
 export declare function detectVisualTools(availableTools: string[]): VisualCapabilities;
 export declare function formatCapabilitiesSummary(caps: VisualCapabilities): string;
+export interface DoctorCheck {
+    group: "core" | "perf" | "visual";
+    name: string;
+    status: "pass" | "warn" | "fail";
+    message: string;
+    fix?: string;
+}
+export interface EnvironmentCapabilities {
+    core: {
+        nodeVersion: string;
+        nodeOk: boolean;
+        gitAvailable: boolean;
+        debugDirExists: boolean;
+    };
+    perf: {
+        lighthouseAvailable: boolean;
+        chromeAvailable: boolean;
+    };
+    visual: {
+        ghostOsConfigured: boolean;
+        claudePreviewConfigured: boolean;
+    };
+}
+export declare function detectVisualToolsFromConfig(cwd: string): {
+    ghostOs: boolean;
+    claudePreview: boolean;
+};
+export declare function detectEnvironment(cwd: string): EnvironmentCapabilities;
+export declare function formatDoctorReport(caps: EnvironmentCapabilities): DoctorCheck[];
