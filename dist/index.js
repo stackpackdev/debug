@@ -12,7 +12,7 @@ import { setCwd, startMcpServer } from "./mcp.js";
 import { exportPack, importPack } from "./packs.js";
 import { installHook } from "./hook.js";
 import { cleanupFromManifest } from "./cleanup.js";
-import { banner, info, success, warn, error, dim, section, kv, ready, printHelp, sym, c } from "./cli.js";
+import { banner, info, success, warn, error, dim, section, kv, ready, printHelp, sym, c, select } from "./cli.js";
 import { detectEnvironment, formatDoctorReport, listInstallable, installIntegration } from "./adapters.js";
 // --- Parse ---
 function parseArgs(argv) {
@@ -380,7 +380,6 @@ You have access to a debugging toolkit via MCP. Start every debugging task with 
 }
 // --- Doctor ---
 function doctorCommand(cwd) {
-    banner();
     const caps = detectEnvironment(cwd);
     const checks = formatDoctorReport(caps);
     const groups = [
@@ -406,7 +405,6 @@ function doctorCommand(cwd) {
         }
     }
     info("");
-    info("Run 'npx debug-toolkit doctor' anytime to check your setup.");
 }
 // --- Interactive Prompts (zero dependencies) ---
 function ask(question) {
@@ -418,48 +416,37 @@ function ask(question) {
         });
     });
 }
-async function askChoice(question, options) {
-    info(question);
-    for (const opt of options) {
-        info(`  ${c.cyan}${opt.key}${c.reset}) ${opt.label}`);
-        if (opt.desc)
-            info(`     ${c.dim}${opt.desc}${c.reset}`);
-    }
-    const answer = await ask(`\n  ${c.dim}Enter choice [${options[0].key}]: ${c.reset}`);
-    const match = options.find((o) => o.key === answer.toLowerCase());
-    return match?.key ?? options[0].key;
-}
+// --- Menu Options ---
+const MENU_OPTIONS = [
+    {
+        label: "Install optional integrations",
+        desc: "Add Lighthouse, Chrome, or Ghost OS for perf profiling and visual debugging.",
+        detail: "Installs open-source tools (~200MB). You can remove them anytime.",
+    },
+    {
+        label: "Start dev server with capture",
+        desc: "Wraps your dev server to auto-capture browser console, network, and build errors.",
+        detail: "Launches your dev command behind an HTTP proxy. Stop anytime with Ctrl+C.",
+    },
+    {
+        label: "Check setup health",
+        desc: "Verify your environment — shows what's working and what's missing with fix commands.",
+        detail: "Quick scan of Node, Git, Lighthouse, Chrome, Ghost OS, and Claude Preview.",
+    },
+    {
+        label: "Re-run setup",
+        desc: "Regenerate MCP config, hooks, and activation rules from scratch.",
+        detail: "Use after moving the project, updating Node, or if something looks broken.",
+    },
+];
 // --- Guided Setup (TTY entrypoint) ---
 async function guidedSetup(cwd) {
     banner();
     // Check if already initialized
     const mcpExists = existsSync(join(cwd, ".mcp.json")) || existsSync(join(cwd, ".claude", "mcp.json"));
     if (mcpExists) {
-        info("debug-toolkit is already set up in this project.\n");
-        const choice = await askChoice("What would you like to do?", [
-            { key: "1", label: "Install optional integrations",
-                desc: "Add Lighthouse, Chrome, or Ghost OS for performance profiling and visual debugging." },
-            { key: "2", label: "Start dev server with capture",
-                desc: "Wraps your dev server to auto-capture browser console, network, and build errors." },
-            { key: "3", label: "Check setup health (doctor)",
-                desc: "Verify your environment — shows what's working and what's missing with fix commands." },
-            { key: "4", label: "Re-run setup",
-                desc: "Regenerate MCP config, hooks, and rules. Use after moving the project or updating Node." },
-        ]);
-        switch (choice) {
-            case "1":
-                await installCommand(cwd);
-                break;
-            case "2":
-                await guidedServe(cwd);
-                break;
-            case "3":
-                doctorCommand(cwd);
-                break;
-            case "4":
-                initCommand(cwd);
-                break;
-        }
+        info(`${c.dim}Already set up in this project. Ready to use in Claude Code.${c.reset}\n`);
+        await mainMenu(cwd);
         return;
     }
     // Fresh project — guided init
@@ -504,6 +491,37 @@ async function guidedSetup(cwd) {
         for (const intg of manualOnly) {
             dim(`  ${intg.name}: ${intg.manualSteps}`);
         }
+    }
+    // After setup, show menu for next steps
+    info("");
+    info(`${c.green}Setup complete!${c.reset} Choose what to do next, or press ${c.dim}Esc${c.reset} to exit.\n`);
+    await mainMenu(cwd);
+}
+async function mainMenu(cwd) {
+    // Menu loop — keeps returning to menu after each action
+    while (true) {
+        const choice = await select("What would you like to do?", MENU_OPTIONS);
+        if (choice === -1) {
+            // Escape or Ctrl+C — exit gracefully
+            info(`${c.dim}Run ${c.reset}npx debug-toolkit${c.dim} anytime to come back.${c.reset}\n`);
+            break;
+        }
+        switch (choice) {
+            case 0:
+                await installCommand(cwd);
+                break;
+            case 1:
+                await guidedServe(cwd);
+                return; // serve takes over, don't loop
+            case 2:
+                doctorCommand(cwd);
+                break;
+            case 3:
+                initCommand(cwd);
+                break;
+        }
+        // After command completes, show separator before next menu
+        info("");
     }
 }
 async function guidedServe(cwd) {

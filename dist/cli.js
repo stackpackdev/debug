@@ -1,5 +1,5 @@
 /**
- * Terminal UI utilities — colors, symbols, formatting.
+ * Terminal UI utilities — colors, symbols, formatting, interactive selector.
  * Zero dependencies. Works in any terminal.
  */
 import { readFileSync } from "node:fs";
@@ -32,6 +32,12 @@ const c = {
     white: isColor ? "\x1b[97m" : "",
     bgGreen: isColor ? "\x1b[42m" : "",
     bgBlue: isColor ? "\x1b[44m" : "",
+    bgCyan: isColor ? "\x1b[46m" : "",
+    inverse: isColor ? "\x1b[7m" : "",
+    hideCursor: isColor ? "\x1b[?25l" : "",
+    showCursor: isColor ? "\x1b[?25h" : "",
+    clearLine: isColor ? "\x1b[2K\x1b[1G" : "",
+    moveUp: (n) => isColor ? `\x1b[${n}A` : "",
 };
 // --- Symbols ---
 export const sym = {
@@ -43,19 +49,20 @@ export const sym = {
     bar: isColor ? "│" : "|",
     dash: isColor ? "─" : "-",
     bolt: isColor ? "⚡" : "!",
+    pointer: isColor ? "❯" : ">",
 };
 // --- Log functions (all go to stderr, stdout reserved for MCP) ---
 export function banner() {
     const lines = [
         "",
         `  ${c.bold}${c.cyan}debug-toolkit${c.reset} ${c.dim}v${VERSION}${c.reset}`,
-        `  ${c.dim}closed-loop debugging for AI agents${c.reset}`,
+        `  ${c.dim}Your AI agent's debugging superpower — investigate, fix, and learn from every bug.${c.reset}`,
         "",
     ];
     process.stderr.write(lines.join("\n") + "\n");
 }
 export function info(msg) {
-    process.stderr.write(`  ${c.blue}${sym.dot}${c.reset} ${msg}\n`);
+    process.stderr.write(`  ${msg}\n`);
 }
 export function success(msg) {
     process.stderr.write(`  ${c.green}${sym.check}${c.reset} ${msg}\n`);
@@ -78,10 +85,101 @@ export function kv(key, value) {
 export function ready(toolCount) {
     process.stderr.write(`\n  ${c.bgBlue}${c.white}${c.bold} READY ${c.reset} ${c.bold}${toolCount} MCP tools available${c.reset}\n\n`);
 }
+export function select(prompt, options) {
+    // Fallback for non-TTY — use numbered input
+    if (!process.stdin.isTTY) {
+        return selectFallback(prompt, options);
+    }
+    return new Promise((resolve) => {
+        let selected = 0;
+        const totalLines = options.length * 3 + 1; // 3 lines per option + prompt
+        function render(first = false) {
+            if (!first) {
+                // Move cursor up to overwrite previous render
+                process.stderr.write(c.moveUp(totalLines));
+            }
+            process.stderr.write(`${c.clearLine}  ${c.bold}${prompt}${c.reset} ${c.dim}(↑↓ to move, enter to select)${c.reset}\n`);
+            for (let i = 0; i < options.length; i++) {
+                const opt = options[i];
+                const isSel = i === selected;
+                const pointer = isSel ? `${c.cyan}${sym.pointer}${c.reset}` : " ";
+                const label = isSel ? `${c.bold}${c.white}${opt.label}${c.reset}` : `${c.dim}${opt.label}${c.reset}`;
+                const desc = isSel ? `${c.white}${opt.desc}${c.reset}` : `${c.dim}${opt.desc}${c.reset}`;
+                const detail = isSel ? `${c.dim}${opt.detail}${c.reset}` : "";
+                process.stderr.write(`${c.clearLine}  ${pointer} ${label}\n`);
+                process.stderr.write(`${c.clearLine}    ${desc}\n`);
+                process.stderr.write(`${c.clearLine}    ${detail}\n`);
+            }
+        }
+        process.stderr.write(c.hideCursor);
+        render(true);
+        const stdin = process.stdin;
+        stdin.setRawMode(true);
+        stdin.resume();
+        stdin.setEncoding("utf-8");
+        function onData(key) {
+            if (key === "\x1b[A") {
+                // Up arrow
+                selected = (selected - 1 + options.length) % options.length;
+                render();
+            }
+            else if (key === "\x1b[B") {
+                // Down arrow
+                selected = (selected + 1) % options.length;
+                render();
+            }
+            else if (key === "\r" || key === "\n") {
+                // Enter
+                cleanup();
+                resolve(selected);
+            }
+            else if (key === "\x03" || key === "\x1b") {
+                // Ctrl+C or Escape
+                cleanup();
+                resolve(-1);
+            }
+        }
+        function cleanup() {
+            stdin.removeListener("data", onData);
+            stdin.setRawMode(false);
+            stdin.pause();
+            process.stderr.write(c.showCursor);
+            // Clear the selector and show the chosen option
+            process.stderr.write(c.moveUp(totalLines));
+            for (let i = 0; i < totalLines; i++) {
+                process.stderr.write(`${c.clearLine}\n`);
+            }
+            process.stderr.write(c.moveUp(totalLines));
+            if (selected >= 0 && selected < options.length) {
+                process.stderr.write(`  ${c.bold}${prompt}${c.reset} ${c.cyan}${options[selected].label}${c.reset}\n\n`);
+            }
+        }
+        stdin.on("data", onData);
+    });
+}
+async function selectFallback(prompt, options) {
+    const { createInterface } = await import("node:readline");
+    process.stderr.write(`  ${c.bold}${prompt}${c.reset}\n`);
+    for (let i = 0; i < options.length; i++) {
+        process.stderr.write(`  ${c.cyan}${i + 1}${c.reset}) ${options[i].label}\n`);
+        process.stderr.write(`     ${c.dim}${options[i].desc}${c.reset}\n`);
+    }
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    const answer = await new Promise((resolve) => {
+        rl.question(`  ${c.dim}Enter choice [1]: ${c.reset}`, (a) => {
+            rl.close();
+            resolve(a.trim());
+        });
+    });
+    const idx = parseInt(answer, 10) - 1;
+    if (idx >= 0 && idx < options.length)
+        return idx;
+    return 0;
+}
 export function printHelp() {
     console.log(`
   ${c.bold}${c.cyan}debug-toolkit${c.reset} ${c.dim}v${VERSION}${c.reset}
-  ${c.dim}Closed-loop debugging for AI agents${c.reset}
+  ${c.dim}Your AI agent's debugging superpower — investigate, fix, and learn from every bug.${c.reset}
 
   ${c.bold}QUICK START${c.reset}
     ${c.green}npx debug-toolkit${c.reset}          ${c.dim}guided setup (in terminal) or MCP server (in Claude Code)${c.reset}
@@ -90,7 +188,8 @@ export function printHelp() {
     ${c.dim}(no args)${c.reset}         guided setup (interactive) or MCP server (non-interactive)
     init              non-interactive setup
     doctor            check environment and optional integrations
-    install           install optional integrations (Lighthouse, Chrome)
+    install           install optional integrations (Lighthouse, Chrome, Ghost OS)
+    serve             start dev server with browser capture
     export            export debug memory to a knowledge pack
     import            import a knowledge pack
 
@@ -101,25 +200,19 @@ export function printHelp() {
     ${c.white}Serve${c.reset}      ${c.green}npx debug-toolkit serve -- npm run dev${c.reset}
                ${c.dim}Everything above + browser console/network capture via proxy${c.reset}
 
-  ${c.bold}8 TOOLS + 1 RESOURCE${c.reset} ${c.dim}(what the AI agent sees)${c.reset}
-    ${c.cyan}debug_investigate${c.reset}   ${c.bold}Error in ${sym.arrow} full context out${c.reset} ${c.dim}+ auto-recall past fixes${c.reset}
-    ${c.cyan}debug_recall${c.reset}        Search past sessions ${c.dim}(with staleness + causal chains)${c.reset}
-    ${c.cyan}debug_patterns${c.reset}      Detect recurring errors, hot files, regressions
-    ${c.cyan}debug_instrument${c.reset}    Add tagged logging to source files
+  ${c.bold}13 TOOLS + 1 RESOURCE${c.reset} ${c.dim}(what the AI agent sees)${c.reset}
+    ${c.cyan}debug_investigate${c.reset}   ${c.bold}Error in ${sym.arrow} full context out${c.reset} ${c.dim}+ auto-recall + triage${c.reset}
+    ${c.cyan}debug_recall${c.reset}        Search past sessions ${c.dim}(confidence + staleness + explain mode)${c.reset}
+    ${c.cyan}debug_patterns${c.reset}      Detect recurring errors, hot files, regressions ${c.dim}+ telemetry${c.reset}
+    ${c.cyan}debug_instrument${c.reset}    Add tagged logging ${c.dim}(conditional instrumentation supported)${c.reset}
     ${c.cyan}debug_capture${c.reset}       Collect runtime output ${c.dim}(paginated)${c.reset}
-    ${c.cyan}debug_verify${c.reset}        Run command, check pass/fail
+    ${c.cyan}debug_verify${c.reset}        Run command, check pass/fail ${c.dim}(auto-saves to memory)${c.reset}
     ${c.cyan}debug_cleanup${c.reset}       Remove instrumentation ${c.dim}+ save diagnosis + causal chain${c.reset}
     ${c.cyan}debug_session${c.reset}       View session state
+    ${c.cyan}debug_perf${c.reset}          Lighthouse Web Vitals ${c.dim}(before/after comparison)${c.reset}
+    ${c.cyan}debug_visual${c.reset}        Screenshots + DOM capture ${c.dim}(via Ghost OS)${c.reset}
+    ${c.cyan}debug_setup${c.reset}         Check/install integrations ${c.dim}(from agent conversation)${c.reset}
     ${c.dim}debug://methodology${c.reset}  ${c.dim}Always-available debugging guide (MCP resource)${c.reset}
-
-  ${c.bold}THE WORKFLOW${c.reset}
-    ${c.dim}1.${c.reset} ${c.cyan}debug_recall${c.reset}       ${c.dim}${sym.arrow} check if solved before${c.reset}
-    ${c.dim}2.${c.reset} ${c.cyan}debug_investigate${c.reset}  ${c.dim}${sym.arrow} understand the error${c.reset}
-    ${c.dim}3.${c.reset} ${c.cyan}debug_instrument${c.reset}   ${c.dim}${sym.arrow} add logging to probe${c.reset}
-    ${c.dim}4.${c.reset} ${c.cyan}debug_capture${c.reset}      ${c.dim}${sym.arrow} collect evidence${c.reset}
-    ${c.dim}5.${c.reset} ${c.white}apply fix${c.reset}           ${c.dim}${sym.arrow} agent edits code${c.reset}
-    ${c.dim}6.${c.reset} ${c.cyan}debug_verify${c.reset}       ${c.dim}${sym.arrow} confirm it works${c.reset}
-    ${c.dim}7.${c.reset} ${c.cyan}debug_cleanup${c.reset}      ${c.dim}${sym.arrow} remove markers, save to memory${c.reset}
 
   ${c.bold}SECURITY${c.reset}
     ${c.green}${sym.check}${c.reset} Path traversal protection    ${c.green}${sym.check}${c.reset} Auto-redact secrets
