@@ -22,7 +22,7 @@ import { cleanupSession } from "./cleanup.js";
 import { drainCaptures, runAndCapture, getRecentCaptures, readTauriLogs, discoverTauriLogs, drainBuildErrors } from "./capture.js";
 import { investigate, isVisualError } from "./context.js";
 import { validateCommand } from "./security.js";
-import { remember, recall, memoryStats, detectPatterns, type CausalLink } from "./memory.js";
+import { remember, recall, memoryStats, detectPatterns, maybeArchive, type CausalLink } from "./memory.js";
 import { triageError } from "./triage.js";
 import { generateSuggestions } from "./suggestions.js";
 import { METHODOLOGY } from "./methodology.js";
@@ -534,6 +534,7 @@ Idempotent — safe to call multiple times. Files are restored to their pre-inst
       });
     }
 
+    maybeArchive(cwd);
     const stats = memoryStats(cwd);
 
     return text({
@@ -781,4 +782,5 @@ export async function startMcpServer(): Promise<void> {
   const server = createMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  maybeArchive(cwd);
 }

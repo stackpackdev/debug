@@ -5,8 +5,10 @@
  * Import external packs into a project's memory.
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { memoryPath, atomicWrite, tokenize } from "./utils.js";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { atomicWrite, archiveDirPath, tokenize } from "./utils.js";
+import { loadStore, saveStore } from "./memory.js";
 
 export interface KnowledgePack {
   version: "1.0";
@@ -25,29 +27,28 @@ export interface PackEntry {
   rootCause: { trigger: string; errorFile: string; causeFile: string; fixDescription: string } | null;
 }
 
-// Minimal store interface (avoids circular dependency with memory.ts)
-interface MemoryStore {
-  version: number;
-  entries: Array<Record<string, unknown>>;
-}
-
-function loadStore(cwd: string): MemoryStore {
-  const p = memoryPath(cwd);
-  if (!existsSync(p)) return { version: 2, entries: [] };
-  try {
-    return JSON.parse(readFileSync(p, "utf-8"));
-  } catch {
-    return { version: 2, entries: [] };
-  }
-}
+// loadStore and saveStore imported from memory.ts — single codepath for all store access
 
 export function exportPack(
   cwd: string,
   outPath: string,
-  options?: { name?: string; filter?: string },
+  options?: { name?: string; filter?: string; includeArchived?: boolean },
 ): { path: string; entries: number } {
   const store = loadStore(cwd);
-  let entries = store.entries;
+  let entries = [...store.entries];
+
+  if (options?.includeArchived) {
+    const archDir = archiveDirPath(cwd);
+    if (existsSync(archDir)) {
+      for (const file of readdirSync(archDir)) {
+        if (!file.endsWith(".json")) continue;
+        try {
+          const arch = JSON.parse(readFileSync(join(archDir, file), "utf-8"));
+          if (Array.isArray(arch.entries)) entries.push(...arch.entries);
+        } catch { /* skip corrupt archive files */ }
+      }
+    }
+  }
 
   if (options?.filter) {
     const f = options.filter.toLowerCase();
@@ -120,6 +121,6 @@ export function importPack(
     imported++;
   }
 
-  atomicWrite(memoryPath(cwd), JSON.stringify(store, null, 2));
+  saveStore(cwd, store);
   return { imported, total: store.entries.length };
 }

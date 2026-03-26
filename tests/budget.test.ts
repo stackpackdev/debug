@@ -36,4 +36,33 @@ describe("Token Budget", () => {
     expect(result.nextStep).toBe("a".repeat(1000));
     expect(result.severity).toBe("critical");
   });
+
+  it("should apply nuclear option when response exceeds budget after all phases", () => {
+    // Create a massive response that exceeds budget even after compression
+    const massive: Record<string, unknown> = {
+      severity: "high", // preserved
+      nextStep: "do something", // preserved
+      bigData1: "x".repeat(5000),
+      bigData2: "y".repeat(5000),
+      bigData3: "z".repeat(5000),
+      bigArray: Array.from({ length: 100 }, (_, i) => ({ id: i, data: "a".repeat(200) })),
+    };
+    const result = fitToBudget(massive, { maxTokens: 200 });
+    expect(result._budget?.compressed).toBe(true);
+    expect(result._budget?.estimated).toBeLessThanOrEqual(200);
+    // Preserved keys should survive
+    expect(result.severity).toBe("high");
+    expect(result.nextStep).toBe("do something");
+    // Non-preserved keys should be gone
+    expect(result.bigData1).toBeUndefined();
+    expect(result.bigArray).toBeUndefined();
+  });
+
+  it("should set overflowHandled when even preserved keys exceed budget", () => {
+    const huge: Record<string, unknown> = {
+      nextStep: "x".repeat(10000), // preserved but massive
+    };
+    const result = fitToBudget(huge, { maxTokens: 50 });
+    expect(result._budget?.overflowHandled).toBe(true);
+  });
 });

@@ -11,10 +11,10 @@
  */
 
 import { execSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { computeConfidence, CONFIDENCE_THRESHOLD, ARCHIVE_THRESHOLD } from "./confidence.js";
-import { memoryPath, walPath, atomicWrite, tokenize } from "./utils.js";
+import { memoryPath, walPath, archiveDirPath, atomicWrite, tokenize } from "./utils.js";
 
 // ━━━ Inverted Index Cache ━━━
 
@@ -649,6 +649,57 @@ export function archiveStaleMemories(cwd: string): { archived: number } {
   return { archived };
 }
 
+// ━━━ Physical Purge ━━━
+
+export function purgeArchivedEntries(cwd: string): { purged: number } {
+  const store = loadStore(cwd);
+  const toArchive = store.entries.filter((e) => e.archived);
+  if (toArchive.length === 0) return { purged: 0 };
+
+  // Group by month
+  const byMonth = new Map<string, MemoryEntry[]>();
+  for (const entry of toArchive) {
+    const month = entry.timestamp.slice(0, 7); // YYYY-MM
+    if (!byMonth.has(month)) byMonth.set(month, []);
+    byMonth.get(month)!.push(entry);
+  }
+
+  // Write to archive files
+  const archDir = archiveDirPath(cwd);
+  if (!existsSync(archDir)) mkdirSync(archDir, { recursive: true, mode: 0o700 });
+
+  for (const [month, entries] of byMonth) {
+    const archFile = join(archDir, `${month}.json`);
+    let existing: { version: number; entries: MemoryEntry[] } = { version: 1, entries: [] };
+    if (existsSync(archFile)) {
+      try { existing = JSON.parse(readFileSync(archFile, "utf-8")); } catch { /* start fresh */ }
+    }
+    const existingIds = new Set(existing.entries.map((e) => e.id));
+    for (const e of entries) {
+      if (!existingIds.has(e.id)) existing.entries.push(e);
+    }
+    atomicWrite(archFile, JSON.stringify(existing, null, 2));
+  }
+
+  // Remove archived entries from main store
+  store.entries = store.entries.filter((e) => !e.archived);
+  saveStore(cwd, store);
+
+  return { purged: toArchive.length };
+}
+
+// ━━━ Deferred Archival ━━━
+
+let lastArchivalRun = 0;
+
+export function maybeArchive(cwd: string): { archived: number; purged: number } {
+  if (Date.now() - lastArchivalRun < 60 * 60 * 1000) return { archived: 0, purged: 0 };
+  lastArchivalRun = Date.now();
+  const archResult = archiveStaleMemories(cwd);
+  const purgeResult = purgeArchivedEntries(cwd);
+  return { archived: archResult.archived, purged: purgeResult.purged };
+}
+
 /**
  * Get memory stats.
  */
@@ -658,8 +709,6 @@ export function memoryStats(cwd: string): {
   newestDate: string | null;
   patterns: PatternInsight[];
 } {
-  // Auto-archive stale entries on stats check
-  archiveStaleMemories(cwd);
   const store = loadStore(cwd);
   if (store.entries.length === 0) {
     return { entries: 0, oldestDate: null, newestDate: null, patterns: [] };
