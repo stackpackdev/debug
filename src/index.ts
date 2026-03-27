@@ -246,15 +246,17 @@ function initCommand(cwd: string): void {
 
 This project has debug-toolkit running. It captures live runtime data from the running app.
 
-## RULE: Do NOT use Read/Grep/Bash to explore code for debugging.
+## RULE: Start debugging with the toolkit, not with file exploration.
 
-The toolkit provides runtime context that file reading cannot:
+Before using Read/Grep/Bash to explore code, check the toolkit first.
+It provides runtime context that file reading cannot:
 - Terminal output (compiler warnings, panics, app state logs)
 - Browser console (console.error, IPC failures, network errors)
 - TypeScript errors (proactive tsc --noEmit)
 - Build errors, git diffs, past solutions, screenshots
 
-Using Read/Grep for debugging wastes turns. The toolkit returns everything in one call.
+The toolkit returns source context, runtime state, and past solutions in one call.
+Then use Read/Grep to dive deeper into the specific files it identifies.
 
 ## Step 1: Read debug://status
 
