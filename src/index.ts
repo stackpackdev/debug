@@ -242,57 +242,45 @@ function initCommand(cwd: string): void {
   const rulesDir = join(cwd, ".claude", "rules");
   if (!existsSync(rulesDir)) mkdirSync(rulesDir, { recursive: true });
   const rulesPath = join(rulesDir, "debug-toolkit.md");
-  writeFileSync(rulesPath, `# debug-toolkit — activation rules
+  writeFileSync(rulesPath, `# debug-toolkit — MANDATORY for any bug or issue
 
-## Step 1: Read debug://status for live app state
+This project has debug-toolkit running. It captures live runtime data from the running app.
 
-The \`debug://status\` MCP resource shows what's happening RIGHT NOW:
-- Terminal errors/warnings (Rust panics, compiler warnings)
-- Browser console errors (console.error, IPC failures, failed fetches)
-- Build errors (Vite, tsc, webpack, ESLint)
-- Tauri logs
-- Active debug sessions
+## RULE: Do NOT use Read/Grep/Bash to explore code for debugging.
 
-**Read this resource FIRST** when the user mentions any bug, error, or issue.
-It's pre-processed and updated every 5 seconds — no tool call needed.
+The toolkit provides runtime context that file reading cannot:
+- Terminal output (compiler warnings, panics, app state logs)
+- Browser console (console.error, IPC failures, network errors)
+- TypeScript errors (proactive tsc --noEmit)
+- Build errors, git diffs, past solutions, screenshots
 
-## Step 2: Call debug_investigate for deep analysis
+Using Read/Grep for debugging wastes turns. The toolkit returns everything in one call.
 
-After reading the live status, call debug_investigate for:
-- Error classification and fix suggestions
-- Source code at the crash site
-- Git context (what changed recently)
-- Past solutions from cross-session memory
-- Visual state capture (screenshots if Ghost OS connected)
+## Step 1: Read debug://status
+
+Read the \`debug://status\` MCP resource FIRST. It's a live situation report updated every 5 seconds showing everything happening in the running app right now.
+
+## Step 2: Call debug_investigate
 
 \`\`\`
-# Runtime error
-debug_investigate({ error: "<stack trace or error message>" })
-
-# Behavior/layout/visual bug
-debug_investigate({ error: "description", files: ["suspect-file.tsx"] })
-
-# General review
-debug_investigate({ error: "Review all errors and warnings in the running app" })
+debug_investigate({ error: "<stack trace or bug description>", files: ["suspect-files.tsx"] })
 \`\`\`
 
-## When to activate:
+Returns: 50-line source context, TypeScript errors, git diff content, terminal output, browser console, past solutions, visual state — everything needed to fix the bug.
 
-- "bug", "error", "issue", "crash", "panic", "broken", "fails"
-- "fix", "debug", "investigate", "diagnose", "troubleshoot"
-- "review errors", "check the app", "what's wrong"
-- "doesn't work", "wrong", "unexpected", "should X but does Y"
-- "overlap", "misaligned", "layout", "visual", "UI"
-- "slow", "laggy", "performance"
-- When you see errors/warnings in any output
+## Step 3: After fixing, call debug_verify
 
-## After fixing: ALWAYS verify
-Call debug_verify({ sessionId, command }) before claiming a fix works.
+\`\`\`
+debug_verify({ sessionId, command: "npm run build" })
+\`\`\`
 
-## SKIP toolkit ONLY for:
-- Obvious typos with a trivial fix
-- The user explicitly tells you the fix
-- New feature requests with no bug
+## Triggers — use toolkit when user says:
+
+bug, error, issue, crash, panic, broken, fails, fix, debug, investigate, review errors, check the app, what's wrong, doesn't work, overlap, misaligned, layout, visual, slow, laggy, performance, test failure
+
+## SKIP ONLY for:
+- New features with no existing bug
+- Obvious typos the user already identified
 `);
   success(`Activation rules ${sym.arrow} ${rulesPath}`);
 
