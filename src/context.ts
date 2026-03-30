@@ -377,8 +377,11 @@ export function classifyError(raw: string): ErrorClassification {
     [/WindowLabelAlreadyExists|WebviewLabelAlreadyExists/i, "tauri-window", "error", "Duplicate window/webview label — use a unique label for each window"],
     [/WebviewNotFound|WindowNotFound/i, "tauri-window", "error", "Window/webview not found — check the label matches what was created"],
     [/AssetNotFound/i, "tauri-asset", "error", "Frontend asset not found — check frontendDist in tauri.conf.json points to your build output"],
+    [/asset:\/\/.*(?:failed|error|not.*(?:found|loaded))|asset.*protocol.*(?:error|scope|denied)/i, "tauri-asset-protocol", "error", "Asset protocol error — check 'security.assetProtocol.scope' in tauri.conf.json. The file may exist on disk but the protocol scope doesn't include its directory."],
     [/CannotDeserializeScope/i, "tauri-acl", "error", "Tauri ACL scope deserialization failed — check capability scope definitions"],
+    [/not.*allowed.*by.*capabilities|capabilities?.*(?:permission|denied|missing)|ACL.*denied/i, "tauri-capability-acl", "error", "Tauri capability denied — add the permission to src-tauri/capabilities/*.json. Capabilities are validated at build time — restart 'cargo tauri dev' after changes."],
     [/tauri.*setup|Setup.*error/i, "tauri-setup", "fatal", "Tauri app setup failed — check the setup closure in Builder::setup()"],
+    [/(?:tauri\.conf\.json|Cargo\.toml).*changed.*rebuild|full.*rebuild.*required/i, "tauri-config-rebuild", "warning", "tauri.conf.json or Cargo.toml changes require a full Rust rebuild. Stop and restart 'cargo tauri dev'."],
     // ── Rust-specific ──
     [/unwrap\(\).*on.*None/i, "rust-panic", "fatal", "Called unwrap() on None — use match, if let, or ? operator instead"],
     [/unwrap\(\).*on.*Err/i, "rust-panic", "fatal", "Called unwrap() on Err — use match or ? operator to handle the error"],

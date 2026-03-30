@@ -237,9 +237,56 @@ export function drainBuildErrors(): BuildError[] {
   return buildBuffer.drain();
 }
 
+// --- Process tracking ---
+
+export interface TrackedProcess {
+  pid: number;
+  command: string;
+  startedAt: string;
+  exitCode: number | null;
+}
+
+const trackedProcesses = new Map<number, TrackedProcess>();
+
+function trackProcess(pid: number | undefined, command: string): void {
+  if (!pid) return;
+  trackedProcesses.set(pid, {
+    pid,
+    command,
+    startedAt: new Date().toISOString(),
+    exitCode: null,
+  });
+}
+
+function markProcessExited(pid: number | undefined, code: number | null): void {
+  if (!pid) return;
+  const entry = trackedProcesses.get(pid);
+  if (entry) entry.exitCode = code;
+}
+
+/**
+ * Get all tracked processes. Checks if running processes are still alive.
+ */
+export function getTrackedProcesses(): TrackedProcess[] {
+  // Verify running processes are still alive
+  for (const [pid, proc] of trackedProcesses) {
+    if (proc.exitCode !== null) continue;
+    try {
+      process.kill(pid, 0); // Signal 0 = check if alive
+    } catch {
+      proc.exitCode = -1; // Dead but we missed the exit event
+    }
+  }
+  return [...trackedProcesses.values()].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+}
+
 // --- Terminal pipe ---
 
-export function pipeProcess(child: ChildProcess): void {
+export function pipeProcess(child: ChildProcess, commandLabel = "dev server"): void {
+  trackProcess(child.pid, commandLabel);
+  child.on("close", (code) => markProcessExited(child.pid, code));
+  child.on("error", () => markProcessExited(child.pid, -1));
+
   const pipe = (stream: NodeJS.ReadableStream | null, isErr: boolean) => {
     if (!stream) return;
     stream.on("data", (chunk: Buffer) => {
@@ -274,6 +321,7 @@ export function runAndCapture(command: string, timeoutMs = 30_000): Promise<Capt
   return new Promise((resolve, reject) => {
     const out: Capture[] = [];
     const child = spawn(command, { shell: true, stdio: "pipe" });
+    trackProcess(child.pid, command);
     const timer = setTimeout(() => { child.kill(); resolve(out); }, timeoutMs);
 
     const handle = (stream: NodeJS.ReadableStream | null, name: string) => {
@@ -298,6 +346,7 @@ export function runAndCapture(command: string, timeoutMs = 30_000): Promise<Capt
 
     child.on("close", (code) => {
       clearTimeout(timer);
+      markProcessExited(child.pid, code);
       out.push({
         id: newCaptureId(), timestamp: new Date().toISOString(),
         source: "terminal", markerTag: null,
@@ -305,7 +354,7 @@ export function runAndCapture(command: string, timeoutMs = 30_000): Promise<Capt
       });
       resolve(out);
     });
-    child.on("error", (e) => { clearTimeout(timer); reject(e); });
+    child.on("error", (e) => { clearTimeout(timer); markProcessExited(child.pid, -1); reject(e); });
   });
 }
 
@@ -467,6 +516,44 @@ export function getRecentCaptures(
     total: filtered.length,
     showing: recent.length,
   };
+}
+
+// --- File path extraction from errors ---
+
+/**
+ * Extract local file paths referenced in browser/terminal error data.
+ * Returns paths with their original reference for cross-referencing.
+ */
+export function extractFilePathsFromError(data: unknown): Array<{ original: string; resolved: string }> {
+  const str = typeof data === "object" && data !== null
+    ? JSON.stringify(data)
+    : String(data ?? "");
+
+  const results: Array<{ original: string; resolved: string }> = [];
+  const seen = new Set<string>();
+
+  // asset://localhost/path → ./path
+  const assetRe = /asset:\/\/localhost\/([\w/.@-]+)/g;
+  let m;
+  while ((m = assetRe.exec(str)) !== null) {
+    const resolved = `./${m[1]}`;
+    if (!seen.has(resolved)) { seen.add(resolved); results.push({ original: m[0], resolved }); }
+  }
+
+  // file:///path → /path
+  const fileRe = /file:\/\/\/([\w/.@-]+)/g;
+  while ((m = fileRe.exec(str)) !== null) {
+    const resolved = `/${m[1]}`;
+    if (!seen.has(resolved)) { seen.add(resolved); results.push({ original: m[0], resolved }); }
+  }
+
+  // ENOENT patterns: open '/path/to/file'
+  const enoentRe = /ENOENT[^']*'([^']+)'/g;
+  while ((m = enoentRe.exec(str)) !== null) {
+    if (!seen.has(m[1])) { seen.add(m[1]); results.push({ original: `ENOENT: ${m[1]}`, resolved: m[1] }); }
+  }
+
+  return results.slice(0, 5);
 }
 
 // ━━━ Live Context (inter-process communication) ━━━

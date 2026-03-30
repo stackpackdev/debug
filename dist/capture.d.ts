@@ -60,7 +60,17 @@ export declare function waitForNewOutput(opts?: {
  * Drain all accumulated build errors from the buffer.
  */
 export declare function drainBuildErrors(): BuildError[];
-export declare function pipeProcess(child: ChildProcess): void;
+export interface TrackedProcess {
+    pid: number;
+    command: string;
+    startedAt: string;
+    exitCode: number | null;
+}
+/**
+ * Get all tracked processes. Checks if running processes are still alive.
+ */
+export declare function getTrackedProcesses(): TrackedProcess[];
+export declare function pipeProcess(child: ChildProcess, commandLabel?: string): void;
 export declare function runAndCapture(command: string, timeoutMs?: number): Promise<Capture[]>;
 export declare function setLighthouseRunning(running: boolean): void;
 export declare function onBrowserEvent(event: {
@@ -92,6 +102,14 @@ export declare function getRecentCaptures(session: DebugSession, opts?: {
     total: number;
     showing: number;
 };
+/**
+ * Extract local file paths referenced in browser/terminal error data.
+ * Returns paths with their original reference for cross-referencing.
+ */
+export declare function extractFilePathsFromError(data: unknown): Array<{
+    original: string;
+    resolved: string;
+}>;
 export interface LiveContext {
     updatedAt: string;
     terminal: Array<{

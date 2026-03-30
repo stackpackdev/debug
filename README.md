@@ -592,6 +592,14 @@ src/
 
 ## Changelog
 
+### v0.15.0 — Session Intelligence + Tauri Deep Integration
+- **Budget-protected past solutions** — `pastSolutions`, `proactiveSuggestion`, and `sourceCode` are now preserved during token budget compression. Top solution diagnosis inlined in `nextStep` so it survives even aggressive compression.
+- **Status diff mode** — second+ reads of `debug://status` show a "Changes Since Last Check" section at the top with new event counts, eliminating full-dump scanning.
+- **Child process tracking** — status report shows active and recently exited processes with PID, command, and runtime duration. Detects dead processes via signal check.
+- **File existence cross-reference** — when browser errors reference local file paths (`asset://`, `file://`, ENOENT), status report checks if files exist on disk and reports the result with protocol/permission hints.
+- **Session auto-expiry** — active sessions older than 24 hours (by last activity, not creation) are automatically expired. Status report only shows active sessions with resolved/expired counts.
+- **Enhanced Tauri awareness** — new error patterns for `asset://` protocol scope, capability ACL, and config rebuild detection. Trivial triage for common Tauri config issues (missing asset scope, missing capability).
+
 ### v0.14.0 — Diagnostic Depth + Agent Workflow Intelligence
 - **Ghost OS diagnostics** — `debug://status` shows visual debugging connection state, last error, and setup instructions. Failed visual captures return diagnostic info instead of failing silently.
 - **Browser log source tagging** — status report separates browser errors by source context (webview vs external Chrome vs Lighthouse-triggered) so agents don't investigate artifacts.

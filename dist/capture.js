@@ -188,8 +188,46 @@ export function waitForNewOutput(opts = {}) {
 export function drainBuildErrors() {
     return buildBuffer.drain();
 }
+const trackedProcesses = new Map();
+function trackProcess(pid, command) {
+    if (!pid)
+        return;
+    trackedProcesses.set(pid, {
+        pid,
+        command,
+        startedAt: new Date().toISOString(),
+        exitCode: null,
+    });
+}
+function markProcessExited(pid, code) {
+    if (!pid)
+        return;
+    const entry = trackedProcesses.get(pid);
+    if (entry)
+        entry.exitCode = code;
+}
+/**
+ * Get all tracked processes. Checks if running processes are still alive.
+ */
+export function getTrackedProcesses() {
+    // Verify running processes are still alive
+    for (const [pid, proc] of trackedProcesses) {
+        if (proc.exitCode !== null)
+            continue;
+        try {
+            process.kill(pid, 0); // Signal 0 = check if alive
+        }
+        catch {
+            proc.exitCode = -1; // Dead but we missed the exit event
+        }
+    }
+    return [...trackedProcesses.values()].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+}
 // --- Terminal pipe ---
-export function pipeProcess(child) {
+export function pipeProcess(child, commandLabel = "dev server") {
+    trackProcess(child.pid, commandLabel);
+    child.on("close", (code) => markProcessExited(child.pid, code));
+    child.on("error", () => markProcessExited(child.pid, -1));
     const pipe = (stream, isErr) => {
         if (!stream)
             return;
@@ -223,6 +261,7 @@ export function runAndCapture(command, timeoutMs = 30_000) {
     return new Promise((resolve, reject) => {
         const out = [];
         const child = spawn(command, { shell: true, stdio: "pipe" });
+        trackProcess(child.pid, command);
         const timer = setTimeout(() => { child.kill(); resolve(out); }, timeoutMs);
         const handle = (stream, name) => {
             if (!stream)
@@ -247,6 +286,7 @@ export function runAndCapture(command, timeoutMs = 30_000) {
         handle(child.stderr, "stderr");
         child.on("close", (code) => {
             clearTimeout(timer);
+            markProcessExited(child.pid, code);
             out.push({
                 id: newCaptureId(), timestamp: new Date().toISOString(),
                 source: "terminal", markerTag: null,
@@ -254,7 +294,7 @@ export function runAndCapture(command, timeoutMs = 30_000) {
             });
             resolve(out);
         });
-        child.on("error", (e) => { clearTimeout(timer); reject(e); });
+        child.on("error", (e) => { clearTimeout(timer); markProcessExited(child.pid, -1); reject(e); });
     });
 }
 // --- Lighthouse flag (for tagging browser events triggered by Lighthouse) ---
@@ -400,6 +440,46 @@ export function getRecentCaptures(session, opts = {}) {
         total: filtered.length,
         showing: recent.length,
     };
+}
+// --- File path extraction from errors ---
+/**
+ * Extract local file paths referenced in browser/terminal error data.
+ * Returns paths with their original reference for cross-referencing.
+ */
+export function extractFilePathsFromError(data) {
+    const str = typeof data === "object" && data !== null
+        ? JSON.stringify(data)
+        : String(data ?? "");
+    const results = [];
+    const seen = new Set();
+    // asset://localhost/path → ./path
+    const assetRe = /asset:\/\/localhost\/([\w/.@-]+)/g;
+    let m;
+    while ((m = assetRe.exec(str)) !== null) {
+        const resolved = `./${m[1]}`;
+        if (!seen.has(resolved)) {
+            seen.add(resolved);
+            results.push({ original: m[0], resolved });
+        }
+    }
+    // file:///path → /path
+    const fileRe = /file:\/\/\/([\w/.@-]+)/g;
+    while ((m = fileRe.exec(str)) !== null) {
+        const resolved = `/${m[1]}`;
+        if (!seen.has(resolved)) {
+            seen.add(resolved);
+            results.push({ original: m[0], resolved });
+        }
+    }
+    // ENOENT patterns: open '/path/to/file'
+    const enoentRe = /ENOENT[^']*'([^']+)'/g;
+    while ((m = enoentRe.exec(str)) !== null) {
+        if (!seen.has(m[1])) {
+            seen.add(m[1]);
+            results.push({ original: `ENOENT: ${m[1]}`, resolved: m[1] });
+        }
+    }
+    return results.slice(0, 5);
 }
 /**
  * Write live context snapshot to .debug/live-context.json.

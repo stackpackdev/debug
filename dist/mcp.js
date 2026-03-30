@@ -13,11 +13,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { execSync } from "node:child_process";
 import { basename, join } from "node:path";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { createSession, loadSession, saveSession, newHypothesisId, } from "./session.js";
+import { existsSync, readFileSync } from "node:fs";
+import { createSession, loadSession, saveSession, newHypothesisId, expireOldSessions, listSessionSummaries, } from "./session.js";
 import { instrumentFile } from "./instrument.js";
 import { cleanupSession } from "./cleanup.js";
-import { drainCaptures, runAndCapture, getRecentCaptures, readTauriLogs, drainBuildErrors, peekRecentOutput, readLiveContext, setLighthouseRunning, waitForNewOutput } from "./capture.js";
+import { drainCaptures, runAndCapture, getRecentCaptures, readTauriLogs, drainBuildErrors, peekRecentOutput, readLiveContext, setLighthouseRunning, waitForNewOutput, extractFilePathsFromError, getTrackedProcesses } from "./capture.js";
 import { investigate, isVisualError } from "./context.js";
 import { validateCommand } from "./security.js";
 import { remember, recall, memoryStats, maybeArchive } from "./memory.js";
@@ -35,6 +35,11 @@ import { enableActivityWriter, logActivity } from "./activity.js";
 let cwd = process.cwd();
 let envCaps = null;
 export function setCwd(dir) { cwd = dir; }
+// Status diff tracking — detect changes between reads
+let lastStatusReadAt = null;
+let lastStatusTerminalCount = 0;
+let lastStatusBrowserCount = 0;
+let lastStatusBuildErrorCount = 0;
 let visualConfig = {
     autoCapture: "auto",
     captureOnInvestigate: true,
@@ -98,7 +103,7 @@ function getRecentGitActivity(cwd) {
         return [];
     }
 }
-function buildLiveStatus(cwd) {
+function buildLiveStatus(cwd, since) {
     const sections = [];
     sections.push("# debug-toolkit — Live Situation Report\n");
     // Read from live context file (written by serve process)
@@ -108,6 +113,29 @@ function buildLiveStatus(cwd) {
     // Use whichever source has data
     const hasLive = live !== null;
     const hasLocal = local.counts.terminal > 0 || local.counts.browser > 0;
+    // Diff section — show what changed since last read
+    if (since && (hasLive || hasLocal)) {
+        const currentTerminal = live?.counts.terminal ?? local.counts.terminal;
+        const currentBrowser = live?.counts.browser ?? local.counts.browser;
+        const currentBuild = live?.buildErrors.length ?? local.counts.buildErrors;
+        const newTerminal = Math.max(0, currentTerminal - since.terminalCount);
+        const newBrowser = Math.max(0, currentBrowser - since.browserCount);
+        const newBuild = Math.max(0, currentBuild - since.buildErrorCount);
+        const elapsed = Math.round((Date.now() - new Date(since.timestamp).getTime()) / 1000);
+        if (newTerminal > 0 || newBrowser > 0 || newBuild > 0) {
+            sections.push(`## Changes Since Last Check (${elapsed}s ago)\n`);
+            if (newTerminal > 0)
+                sections.push(`- **${newTerminal}** new terminal line(s)`);
+            if (newBrowser > 0)
+                sections.push(`- **${newBrowser}** new browser event(s)`);
+            if (newBuild > 0)
+                sections.push(`- **${newBuild}** new build error(s)`);
+            sections.push("");
+        }
+        else {
+            sections.push(`*No new events since last check (${elapsed}s ago). Full status below for reference.*\n`);
+        }
+    }
     if (!hasLive && !hasLocal) {
         sections.push("**Dev server not running or not capturing.**\n");
         sections.push("Start with: `npx debug-toolkit serve -- <your dev command>`\n");
@@ -223,6 +251,30 @@ function buildLiveStatus(cwd) {
                 sections.push("```\n");
             }
         }
+        // === FILE CROSS-REFERENCE (check if referenced files exist on disk) ===
+        if (live.browser.length > 0) {
+            const allPaths = [];
+            const seenResolved = new Set();
+            for (const b of live.browser) {
+                const refs = extractFilePathsFromError(b.data);
+                for (const ref of refs) {
+                    if (seenResolved.has(ref.resolved))
+                        continue;
+                    seenResolved.add(ref.resolved);
+                    const fullPath = ref.resolved.startsWith("/") ? ref.resolved : join(cwd, ref.resolved);
+                    allPaths.push({ ...ref, exists: existsSync(fullPath) });
+                }
+            }
+            if (allPaths.length > 0) {
+                sections.push("## File Cross-Reference\n");
+                for (const p of allPaths) {
+                    const icon = p.exists ? "✓ EXISTS" : "✗ NOT FOUND";
+                    const hint = p.exists ? " *(file exists — check protocol scope or permissions)*" : "";
+                    sections.push(`- \`${p.original}\` → \`${p.resolved}\` — **${icon}**${hint}`);
+                }
+                sections.push("");
+            }
+        }
         // === PROACTIVE STATIC ANALYSIS ===
         const tscErrors = runQuickTsc(cwd);
         if (tscErrors.length > 0) {
@@ -261,9 +313,31 @@ function buildLiveStatus(cwd) {
         }
     }
     appendTauriLogs(sections, cwd);
+    appendActiveProcesses(sections);
     appendVisualStatus(sections);
     appendSessions(sections, cwd);
     return sections.join("\n");
+}
+function appendActiveProcesses(sections) {
+    const procs = getTrackedProcesses();
+    if (procs.length === 0)
+        return;
+    const running = procs.filter((p) => p.exitCode === null);
+    const recentlyExited = procs.filter((p) => p.exitCode !== null).slice(-3);
+    if (running.length === 0 && recentlyExited.length === 0)
+        return;
+    sections.push("## Tracked Processes\n");
+    for (const p of running) {
+        const elapsed = Math.round((Date.now() - new Date(p.startedAt).getTime()) / 1000);
+        const mins = Math.floor(elapsed / 60);
+        const secs = elapsed % 60;
+        const duration = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+        sections.push(`- **PID ${p.pid}**: \`${p.command.slice(0, 60)}\` — running (${duration})`);
+    }
+    for (const p of recentlyExited) {
+        sections.push(`- PID ${p.pid}: \`${p.command.slice(0, 60)}\` — exited (code ${p.exitCode})`);
+    }
+    sections.push("");
 }
 function appendVisualStatus(sections) {
     const diag = getVisualDiagnostic();
@@ -300,25 +374,24 @@ function appendTauriLogs(sections, cwd) {
     }
 }
 function appendSessions(sections, cwd) {
-    const sessionsDir = join(cwd, ".debug", "sessions");
-    if (!existsSync(sessionsDir))
+    // Auto-expire stale sessions before listing
+    expireOldSessions(cwd);
+    const { active, counts } = listSessionSummaries(cwd);
+    if (counts.total === 0)
         return;
-    try {
-        const files = readdirSync(sessionsDir).filter((f) => f.endsWith(".json")).sort().reverse().slice(0, 3);
-        if (files.length > 0) {
-            sections.push("## Recent Debug Sessions\n");
-            for (const f of files) {
-                try {
-                    const session = JSON.parse(readFileSync(join(sessionsDir, f), "utf-8"));
-                    const status = session.verifiedAt ? "verified" : session.diagnosis ? "diagnosed" : "active";
-                    sections.push(`- **${session.id}** [${status}] — ${session.problem?.slice(0, 80) ?? "unknown"}`);
-                }
-                catch { }
-            }
-            sections.push("");
+    sections.push("## Debug Sessions\n");
+    if (active.length > 0) {
+        for (const s of active) {
+            sections.push(`- **${s.id}** [active] — ${s.problem?.slice(0, 80) ?? "unknown"} (${s.captureCount} captures)`);
         }
     }
-    catch { }
+    else {
+        sections.push("- No active sessions");
+    }
+    if (counts.resolved > 0 || counts.expired > 0) {
+        sections.push(`- *${counts.resolved} resolved, ${counts.expired} expired*`);
+    }
+    sections.push("");
 }
 export function createMcpServer() {
     const server = new McpServer({ name: "debug-toolkit", version: getPackageVersion() }, { capabilities: { tools: {}, resources: {} } });
@@ -337,7 +410,21 @@ export function createMcpServer() {
         description: "Live runtime status — terminal errors, browser console, build errors, and active sessions. READ THIS FIRST when debugging.",
         mimeType: "text/markdown",
     }, async () => {
-        const status = buildLiveStatus(cwd);
+        // Build diff context from previous read
+        const since = lastStatusReadAt ? {
+            timestamp: lastStatusReadAt,
+            terminalCount: lastStatusTerminalCount,
+            browserCount: lastStatusBrowserCount,
+            buildErrorCount: lastStatusBuildErrorCount,
+        } : null;
+        const status = buildLiveStatus(cwd, since);
+        // Update tracking for next diff
+        const live = readLiveContext(cwd);
+        const local = peekRecentOutput();
+        lastStatusReadAt = new Date().toISOString();
+        lastStatusTerminalCount = live?.counts.terminal ?? local.counts.terminal;
+        lastStatusBrowserCount = live?.counts.browser ?? local.counts.browser;
+        lastStatusBuildErrorCount = live?.buildErrors.length ?? local.counts.buildErrors;
         return {
             contents: [{ uri: "debug://status", mimeType: "text/markdown", text: status }],
         };
@@ -521,8 +608,9 @@ Start every debugging session with this tool.`,
                 staleness: s.staleness.stale ? s.staleness.reason : undefined,
                 rootCause: s.rootCause ?? undefined,
             }));
+            const topDiag = fresh.length > 0 ? fresh[0].diagnosis?.slice(0, 200) : null;
             response.nextStep = fresh.length > 0
-                ? `Found ${fresh.length} fresh past solution(s). Review them before investigating further.`
+                ? `Found ${fresh.length} fresh past solution(s)${topDiag ? `: "${topDiag}"` : ""}. Review pastSolutions for full details.`
                 : `Found ${pastSolutions.length} past solution(s) but all are outdated (code changed). Investigate fresh.`;
             // Proactive memory: surface high-confidence FRESH matches prominently
             const highConfidence = pastSolutions.filter((s) => (s.confidence ?? 0) >= 0.8 && !s.staleness.stale);

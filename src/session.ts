@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { ensureGitignore } from "./security.js";
 import { atomicWrite } from "./utils.js";
@@ -195,3 +195,78 @@ export function nextMarkerTag(): string {
   return `DBG_${String(markerCounter).padStart(3, "0")}`;
 }
 export function resetMarkerCounter(): void { markerCounter = 0; }
+
+// --- Session auto-expiry ---
+
+const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * Expire old active sessions that haven't been updated recently.
+ * Returns the count of sessions expired.
+ */
+export function expireOldSessions(cwd: string, maxAgeMs = DEFAULT_MAX_AGE_MS): number {
+  const dir = sessionsDir(cwd);
+  if (!existsSync(dir)) return 0;
+
+  let expired = 0;
+  try {
+    const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    const now = Date.now();
+
+    for (const file of files) {
+      try {
+        const filePath = join(dir, file);
+        const raw = JSON.parse(readFileSync(filePath, "utf-8")) as DebugSession;
+        if (raw.status !== "active") continue;
+
+        // Use the most recent activity timestamp
+        const lastActivity = raw.captures.length > 0
+          ? new Date(raw.captures[raw.captures.length - 1].timestamp).getTime()
+          : new Date(raw.createdAt).getTime();
+
+        if (now - lastActivity > maxAgeMs) {
+          raw.status = "expired" as DebugSession["status"];
+          atomicWrite(filePath, JSON.stringify(raw, null, 2));
+          expired++;
+        }
+      } catch { /* skip corrupt session files */ }
+    }
+  } catch { /* sessions dir unreadable */ }
+
+  return expired;
+}
+
+/**
+ * List session summaries for the status report.
+ * Only returns active sessions, with a count of total/expired/resolved.
+ */
+export function listSessionSummaries(cwd: string): {
+  active: Array<{ id: string; problem: string; createdAt: string; captureCount: number }>;
+  counts: { active: number; resolved: number; expired: number; total: number };
+} {
+  const dir = sessionsDir(cwd);
+  if (!existsSync(dir)) return { active: [], counts: { active: 0, resolved: 0, expired: 0, total: 0 } };
+
+  const counts = { active: 0, resolved: 0, expired: 0, total: 0 };
+  const active: Array<{ id: string; problem: string; createdAt: string; captureCount: number }> = [];
+
+  try {
+    const files = readdirSync(dir).filter((f) => f.endsWith(".json")).sort().reverse();
+    for (const file of files) {
+      try {
+        const raw = JSON.parse(readFileSync(join(dir, file), "utf-8")) as DebugSession;
+        counts.total++;
+        if (raw.status === "active") {
+          counts.active++;
+          active.push({ id: raw.id, problem: raw.problem, createdAt: raw.createdAt, captureCount: raw.captures.length });
+        } else if (raw.status === "resolved") {
+          counts.resolved++;
+        } else {
+          counts.expired++;
+        }
+      } catch { counts.total++; }
+    }
+  } catch {}
+
+  return { active: active.slice(0, 5), counts };
+}

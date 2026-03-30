@@ -17,6 +17,9 @@ const TRIVIAL_PATTERNS = [
     { test: /ENOENT.*no such file/i, hint: "The file path doesn't exist — check for typos." },
     { test: /@import must precede/i, hint: "Move @import statements to the top of the CSS file, before other rules." },
     { test: /Unexpected token/i, hint: "Syntax error — check the indicated line for missing or extra characters." },
+    // Tauri-specific trivial patterns
+    { test: /asset:\/\/.*(?:failed|not.*loaded)/i, hint: "File not in asset protocol scope — add the directory to 'security.assetProtocol.scope' in tauri.conf.json." },
+    { test: /capability.*not.*found|not allowed.*command/i, hint: "Missing Tauri capability — add the command permission to src-tauri/capabilities/*.json and restart 'cargo tauri dev'." },
 ];
 // Count user-code stack frames (excludes node_modules, node:internal, etc.)
 const USER_FRAME_RE = /at\s+(?:[\w$.< >\[\]]+?\s+)?\(?([^\s()]+):(\d+):(\d+)\)?/gm;

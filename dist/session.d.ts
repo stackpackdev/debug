@@ -87,3 +87,26 @@ export declare function newInstrumentationId(): string;
 export declare function newCaptureId(): string;
 export declare function nextMarkerTag(): string;
 export declare function resetMarkerCounter(): void;
+/**
+ * Expire old active sessions that haven't been updated recently.
+ * Returns the count of sessions expired.
+ */
+export declare function expireOldSessions(cwd: string, maxAgeMs?: number): number;
+/**
+ * List session summaries for the status report.
+ * Only returns active sessions, with a count of total/expired/resolved.
+ */
+export declare function listSessionSummaries(cwd: string): {
+    active: Array<{
+        id: string;
+        problem: string;
+        createdAt: string;
+        captureCount: number;
+    }>;
+    counts: {
+        active: number;
+        resolved: number;
+        expired: number;
+        total: number;
+    };
+};
