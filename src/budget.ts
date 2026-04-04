@@ -84,6 +84,34 @@ export function fitToBudget<T extends Record<string, unknown>>(
     }
   }
 
+  // Phase 3.5: Truncate sourceCode snippets to 15 lines each
+  if (estimateTokens(compressed) > maxTokens && Array.isArray(compressed.sourceCode)) {
+    for (const sc of compressed.sourceCode) {
+      if (sc && typeof sc === "object" && typeof sc.snippet === "string") {
+        const lines = sc.snippet.split("\n");
+        if (lines.length > 15) {
+          sc.snippet = lines.slice(0, 15).join("\n") + `\n... ${lines.length - 15} more lines`;
+        }
+      }
+    }
+  }
+
+  // Phase 3.7: Truncate runtimeContext arrays to 5 items
+  if (estimateTokens(compressed) > maxTokens && compressed.runtimeContext && typeof compressed.runtimeContext === "object") {
+    const rc = compressed.runtimeContext as Record<string, unknown>;
+    for (const [k, v] of Object.entries(rc)) {
+      if (Array.isArray(v) && v.length > 5) {
+        rc[k] = [...v.slice(0, 5), `... ${v.length - 5} more`];
+      }
+    }
+  }
+
+  // Phase 3.9: Remove low-priority fields
+  if (estimateTokens(compressed) > maxTokens) {
+    delete compressed.userFrames;
+    delete compressed.telemetryHint;
+  }
+
   // Phase 4 (aggressive): Remove environment, git details if still over budget
   if (summaryDepth >= 2 || estimateTokens(compressed) > maxTokens) {
     delete compressed.environment;

@@ -4,6 +4,7 @@
 import { existsSync, writeFileSync, readFileSync, renameSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execSync } from "node:child_process";
 export function getPackageVersion() {
     try {
         const dir = dirname(fileURLToPath(import.meta.url));
@@ -12,6 +13,53 @@ export function getPackageVersion() {
     }
     catch {
         return "0.0.0";
+    }
+}
+export function checkForUpdate() {
+    const current = getPackageVersion();
+    try {
+        const latest = execSync("npm view debug-toolkit version", { encoding: "utf-8", timeout: 5_000 }).trim();
+        const updateAvailable = latest !== current && compareSemver(latest, current) > 0;
+        return {
+            current,
+            latest,
+            updateAvailable,
+            updateCommand: "npx -y debug-toolkit@latest",
+        };
+    }
+    catch {
+        return { current, latest: current, updateAvailable: false, updateCommand: "npx -y debug-toolkit@latest" };
+    }
+}
+function compareSemver(a, b) {
+    const pa = a.split(".").map(Number);
+    const pb = b.split(".").map(Number);
+    for (let i = 0; i < 3; i++) {
+        if ((pa[i] ?? 0) > (pb[i] ?? 0))
+            return 1;
+        if ((pa[i] ?? 0) < (pb[i] ?? 0))
+            return -1;
+    }
+    return 0;
+}
+export function runSelfUpdate() {
+    const before = getPackageVersion();
+    try {
+        // Clear npx cache and re-fetch latest
+        execSync("npx -y debug-toolkit@latest --version", { encoding: "utf-8", timeout: 30_000, stdio: "pipe" });
+        // Re-check what version we'd get now
+        const after = execSync("npm view debug-toolkit version", { encoding: "utf-8", timeout: 5_000 }).trim();
+        return {
+            success: true,
+            from: before,
+            to: after,
+            message: before === after
+                ? `Already on latest version (${after}).`
+                : `Updated from ${before} to ${after}. Restart Claude Code to use the new version.`,
+        };
+    }
+    catch (e) {
+        return { success: false, from: before, to: before, message: `Update failed: ${e instanceof Error ? e.message : String(e)}` };
     }
 }
 export function memoryPath(cwd) {

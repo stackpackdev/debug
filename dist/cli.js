@@ -203,6 +203,7 @@ export function printHelp() {
   ${c.bold}COMMANDS${c.reset}
     ${c.dim}(no args)${c.reset}         guided setup (interactive) or MCP server (non-interactive)
     init              non-interactive setup (writes .mcp.json, hooks, rules)
+    update            update to latest version + refresh SKILL.md and rules
     doctor            check environment + optional integrations
     serve             start dev server with browser + activity capture
     export [path]     export debug memory to a portable knowledge pack
@@ -233,7 +234,7 @@ export function printHelp() {
     ${c.cyan}debug_session${c.reset}       View session state
     ${c.cyan}debug_perf${c.reset}          Lighthouse Web Vitals ${c.dim}(before/after comparison)${c.reset}
     ${c.cyan}debug_visual${c.reset}        Screenshots + DOM capture ${c.dim}(via Ghost OS)${c.reset}
-    ${c.cyan}debug_setup${c.reset}         Check/install integrations ${c.dim}(from agent conversation)${c.reset}
+    ${c.cyan}debug_setup${c.reset}         Check/install integrations, check for & apply updates
 
   ${c.bold}SECURITY${c.reset}
     ${c.green}${sym.check}${c.reset} Path traversal protection    ${c.green}${sym.check}${c.reset} Auto-redact secrets

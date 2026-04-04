@@ -115,7 +115,7 @@ function parseStackFrames(error, cwd) {
     }
     return frames;
 }
-function extractSourceSnippets(frames, cwd, contextLines = 25) {
+function extractSourceSnippets(frames, cwd, contextLines = 15) {
     const snippets = [];
     const seen = new Set();
     // Only user code frames, up to 3 files

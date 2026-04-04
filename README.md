@@ -1,6 +1,8 @@
+> Part of the [StackPack](https://github.com/stackpackdev) ecosystem — the complete toolkit for building software in the agent age.
+
 # debug-toolkit
 
-Runtime context layer for AI coding agents. One MCP server gives your agent live access to terminal output, browser console, build errors, TypeScript errors, git diffs, screenshots, and cross-session memory — so it can debug in one tool call what would take 20+ file reads manually.
+Runtime DevTools for AI agents. Gives your agent the same signals a developer sees in browser DevTools and terminal — console logs, network errors, build failures, runtime exceptions — over MCP, so it can debug from captured output instead of guessing from source code.
 
 ```bash
 npm i -g debug-toolkit            # install globally (one time)

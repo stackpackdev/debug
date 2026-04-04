@@ -17,6 +17,7 @@ import { cleanupFromManifest } from "./cleanup.js";
 import { startActivityFeed } from "./activity.js";
 import { banner, info, success, warn, error, dim, section, kv, printHelp, sym, c, select, spinner, type SelectOption } from "./cli.js";
 import { detectEnvironment, formatDoctorReport, listInstallable, installIntegration, type EnvironmentCapabilities } from "./adapters.js";
+import { checkForUpdate, getPackageVersion } from "./utils.js";
 
 // --- Parse ---
 
@@ -24,7 +25,7 @@ function parseArgs(argv: string[]) {
   const args = argv.slice(2);
   const cmd = args[0] ?? "mcp"; // DEFAULT: pure MCP server (zero-config!)
 
-  if (["clean", "init", "uninstall", "doctor", "demo", "help", "--help", "-h", "mcp", "export", "import"].includes(cmd)) {
+  if (["clean", "init", "uninstall", "doctor", "demo", "help", "--help", "-h", "mcp", "export", "import", "update"].includes(cmd)) {
     return { command: cmd.replace(/^-+/, ""), port: null as number | null, childCommand: [] as string[] };
   }
   if (cmd !== "serve") return { command: "mcp", port: null as number | null, childCommand: [] as string[] };
@@ -308,7 +309,7 @@ function initCommand(cwd: string): void {
   // Register ONLY the pure MCP server (lightweight, no app startup)
   existing.mcpServers["debug-toolkit"] = {
     command: "npx",
-    args: ["-y", "debug-toolkit"],
+    args: ["-y", "debug-toolkit@latest"],
   };
 
   // REMOVE any previously registered serve mode (from older versions)
@@ -657,6 +658,14 @@ async function guidedSetup(cwd: string): Promise<void> {
   if (mcpExists) {
     success(`Already set up in this project. Ready to use in Claude Code.\n`);
 
+    // Check for updates
+    const update = checkForUpdate();
+    if (update.updateAvailable) {
+      warn(`\n  ${c.yellow}${c.bold}Update available: v${update.current} → v${update.latest}${c.reset}`);
+      info(`  Run: ${c.cyan}npx debug-toolkit@latest${c.reset}`);
+      info(`  Or in Claude Code: ${c.cyan}debug_setup action='update'${c.reset}\n`);
+    }
+
     // Silently update SKILL.md and command on every run (picks up new content from package updates)
     updateSkillMd(cwd);
     const commandsDir = join(cwd, ".claude", "commands");
@@ -802,6 +811,47 @@ async function main(): Promise<void> {
 
   switch (parsed.command) {
     case "help": printHelp(); break;
+
+    case "update": {
+      banner();
+      section("UPDATE");
+
+      // Check current vs latest
+      const update = checkForUpdate();
+      info(`Current version: ${c.bold}v${update.current}${c.reset}`);
+      info(`Latest version:  ${c.bold}v${update.latest}${c.reset}\n`);
+
+      if (!update.updateAvailable) {
+        success("Already on the latest version.\n");
+        break;
+      }
+
+      // Fetch latest
+      info(`Updating debug-toolkit ${c.dim}v${update.current} → v${update.latest}${c.reset}...\n`);
+      try {
+        execSync("npm install -g debug-toolkit@latest", { stdio: "inherit", timeout: 60_000 });
+        success(`Updated to v${update.latest}\n`);
+      } catch {
+        // Fallback: not installed globally, clear npx cache instead
+        try {
+          execSync("npx -y debug-toolkit@latest --version", { stdio: "pipe", timeout: 30_000 });
+          success(`Updated npx cache to v${update.latest}\n`);
+        } catch (e2) {
+          error(`Update failed: ${e2 instanceof Error ? e2.message : String(e2)}`);
+          info(`Try manually: ${c.cyan}npm install -g debug-toolkit@latest${c.reset}`);
+          break;
+        }
+      }
+
+      // Re-run init to refresh SKILL.md, rules, and commands
+      section("REFRESH");
+      info("Updating SKILL.md, activation rules, and commands...\n");
+      initCommand(cwd);
+
+      info("");
+      success("Update complete. Restart Claude Code to use the new version.\n");
+      break;
+    }
 
     case "demo": {
       const { runDemo } = await import("./demo.js");

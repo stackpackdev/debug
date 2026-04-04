@@ -146,7 +146,7 @@ interface SourceSnippet {
 function extractSourceSnippets(
   frames: StackFrame[],
   cwd: string,
-  contextLines = 25,
+  contextLines = 15,
 ): SourceSnippet[] {
   const snippets: SourceSnippet[] = [];
   const seen = new Set<string>();

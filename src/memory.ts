@@ -593,7 +593,7 @@ export function recall(
   }
 
   const results = scored
-    .filter((e) => e.relevance > 0.2)
+    .filter((e) => e.relevance > 0.4 && !(e.staleness.stale && e.confidence < 0.3))
     .sort((a, b) => {
       // Sort by combined confidence * relevance score
       return (b.confidence * b.relevance) - (a.confidence * a.relevance);

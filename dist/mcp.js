@@ -30,11 +30,25 @@ import { explainTriage, explainConfidence } from "./explain.js";
 import { recordOutcome, getTelemetry, getFixRateForError } from "./telemetry.js";
 import { detectEnvironment, listInstallable, installIntegration } from "./adapters.js";
 import { connectToGhostOs, disconnectGhostOs, isGhostConnected, resetConnectionState, takeScreenshot, readScreen, findElements, annotateScreen, getVisualDiagnostic, } from "./ghost-bridge.js";
-import { saveScreenshot, getPackageVersion } from "./utils.js";
+import { saveScreenshot, getPackageVersion, checkForUpdate, runSelfUpdate } from "./utils.js";
 import { enableActivityWriter, logActivity } from "./activity.js";
 let cwd = process.cwd();
 let envCaps = null;
 export function setCwd(dir) { cwd = dir; }
+// Cached update check — run once per MCP session, non-blocking
+let updateCheckResult = null;
+let updateCheckDone = false;
+function lazyUpdateCheck() {
+    if (updateCheckDone)
+        return;
+    updateCheckDone = true;
+    // Run async to avoid blocking status reads
+    try {
+        const result = checkForUpdate();
+        updateCheckResult = result;
+    }
+    catch { /* silent */ }
+}
 // Status diff tracking — detect changes between reads
 let lastStatusReadAt = null;
 let lastStatusTerminalCount = 0;
@@ -58,7 +72,7 @@ function loadVisualConfig(cwd) {
     catch { /* use defaults */ }
 }
 function text(data) {
-    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
 }
 /**
  * Build a live status report from all available runtime sources.
@@ -75,17 +89,26 @@ function formatBrowserEvent(b) {
         return `[${d.type ?? "error"}] ${d.message}`;
     return JSON.stringify(d ?? b.data);
 }
+let tscCache = null;
+const TSC_CACHE_TTL = 30_000; // 30s
 function runQuickTsc(cwd) {
+    if (tscCache && Date.now() - tscCache.timestamp < TSC_CACHE_TTL)
+        return tscCache.result;
+    let result;
     try {
-        const result = execSync("npx tsc --noEmit 2>&1", { cwd, timeout: 15_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-        return []; // clean
+        execSync("npx tsc --noEmit 2>&1", { cwd, timeout: 15_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+        result = []; // clean
     }
     catch (e) {
         if (e.stdout) {
-            return e.stdout.split("\n").filter((l) => l.trim() && /error TS\d+/.test(l)).slice(0, 20);
+            result = e.stdout.split("\n").filter((l) => l.trim() && /error TS\d+/.test(l)).slice(0, 20);
         }
-        return [];
+        else {
+            result = [];
+        }
     }
+    tscCache = { result, timestamp: Date.now() };
+    return result;
 }
 function getRecentGitActivity(cwd) {
     try {
@@ -103,13 +126,33 @@ function getRecentGitActivity(cwd) {
         return [];
     }
 }
+/** Collapse consecutive duplicate lines into "line (×N)" */
+function collapseRepeats(lines) {
+    if (lines.length === 0)
+        return [];
+    const result = [];
+    let prev = lines[0];
+    let count = 1;
+    for (let i = 1; i < lines.length; i++) {
+        if (lines[i] === prev) {
+            count++;
+        }
+        else {
+            result.push(count > 1 ? `${prev}  (×${count})` : prev);
+            prev = lines[i];
+            count = 1;
+        }
+    }
+    result.push(count > 1 ? `${prev}  (×${count})` : prev);
+    return result;
+}
 function buildLiveStatus(cwd, since) {
     const sections = [];
     sections.push("# debug-toolkit — Live Situation Report\n");
     // Read from live context file (written by serve process)
     const live = readLiveContext(cwd);
     // Also try local ring buffers (if MCP is co-located with serve, e.g. tests)
-    const local = peekRecentOutput({ terminalLines: 200, browserLines: 100, buildErrors: 50 });
+    const local = peekRecentOutput({ terminalLines: 100, browserLines: 50, buildErrors: 30 });
     // Use whichever source has data
     const hasLive = live !== null;
     const hasLocal = local.counts.terminal > 0 || local.counts.browser > 0;
@@ -133,7 +176,16 @@ function buildLiveStatus(cwd, since) {
             sections.push("");
         }
         else {
-            sections.push(`*No new events since last check (${elapsed}s ago). Full status below for reference.*\n`);
+            // True delta: no new events → compact response, skip full dump
+            const tscErrors = runQuickTsc(cwd);
+            sections.push(`*No new events since last check (${elapsed}s ago).*`);
+            sections.push(`Terminal: ${currentTerminal} lines, Browser: ${currentBrowser} events, Build errors: ${currentBuild}`);
+            if (tscErrors.length > 0)
+                sections.push(`TypeScript errors: ${tscErrors.length}`);
+            sections.push("");
+            appendSessions(sections, cwd);
+            appendUpdateNotice(sections);
+            return sections.join("\n");
         }
     }
     if (!hasLive && !hasLocal) {
@@ -169,17 +221,16 @@ function buildLiveStatus(cwd, since) {
             if (errors.length > 0) {
                 sections.push("## Terminal Errors & Warnings\n");
                 sections.push("```");
-                for (const t of errors.slice(-30))
-                    sections.push(t.text);
+                for (const line of collapseRepeats(errors.slice(-30).map((t) => t.text)))
+                    sections.push(line);
                 sections.push("```\n");
             }
             // Application output — shows what's running, what loaded, what state the app is in
             if (appOutput.length > 0) {
                 sections.push("## Terminal Output (app state)\n");
                 sections.push("```");
-                // Show last 50 lines of non-error output
-                for (const t of appOutput.slice(-50))
-                    sections.push(t.text);
+                for (const line of collapseRepeats(appOutput.slice(-50).map((t) => t.text)))
+                    sections.push(line);
                 sections.push("```\n");
             }
         }
@@ -267,11 +318,14 @@ function buildLiveStatus(cwd, since) {
             }
             if (allPaths.length > 0) {
                 sections.push("## File Cross-Reference\n");
-                for (const p of allPaths) {
+                const shown = allPaths.slice(0, 10);
+                for (const p of shown) {
                     const icon = p.exists ? "✓ EXISTS" : "✗ NOT FOUND";
                     const hint = p.exists ? " *(file exists — check protocol scope or permissions)*" : "";
                     sections.push(`- \`${p.original}\` → \`${p.resolved}\` — **${icon}**${hint}`);
                 }
+                if (allPaths.length > 10)
+                    sections.push(`*... and ${allPaths.length - 10} more referenced paths*`);
                 sections.push("");
             }
         }
@@ -292,19 +346,13 @@ function buildLiveStatus(cwd, since) {
                 sections.push(l);
             sections.push("");
         }
-        // === SUMMARY ===
-        sections.push("## Summary\n");
+        // === SUMMARY (compact — counts already visible from sections above) ===
         const termErrors = live.terminal.filter((t) => /error|warn|panic|failed|crash|exception/i.test(t.text));
         const browserErrors = live.browser.filter((b) => {
             const d = typeof b.data === "object" && b.data !== null ? b.data : null;
             return d?.level === "error" || d?.level === "warn" || b.source === "browser-error" || b.source === "browser-network";
         });
         const totalIssues = termErrors.length + live.buildErrors.length + browserErrors.length + tscErrors.length;
-        sections.push(`- Terminal: ${live.counts.terminal} lines (${termErrors.length} errors/warnings)`);
-        sections.push(`- Browser: ${live.counts.browser} events (${browserErrors.length} errors/warnings)`);
-        sections.push(`- Build errors: ${live.buildErrors.length}`);
-        sections.push(`- TypeScript errors: ${tscErrors.length}`);
-        sections.push("");
         if (totalIssues > 0) {
             sections.push(`**${totalIssues} issue(s) detected.** Call \`debug_investigate\` with the specific error for deep analysis.\n`);
         }
@@ -316,6 +364,7 @@ function buildLiveStatus(cwd, since) {
     appendActiveProcesses(sections);
     appendVisualStatus(sections);
     appendSessions(sections, cwd);
+    appendUpdateNotice(sections);
     return sections.join("\n");
 }
 function appendActiveProcesses(sections) {
@@ -373,6 +422,14 @@ function appendTauriLogs(sections, cwd) {
         sections.push("```\n");
     }
 }
+function appendUpdateNotice(sections) {
+    lazyUpdateCheck();
+    if (updateCheckResult?.updateAvailable) {
+        sections.push("## Update Available\n");
+        sections.push(`**v${updateCheckResult.current} → v${updateCheckResult.latest}**`);
+        sections.push("Run `debug_setup action='update'` to upgrade, then restart Claude Code.\n");
+    }
+}
 function appendSessions(sections, cwd) {
     // Auto-expire stale sessions before listing
     expireOldSessions(cwd);
@@ -427,6 +484,69 @@ export function createMcpServer() {
         lastStatusBuildErrorCount = live?.buildErrors.length ?? local.counts.buildErrors;
         return {
             contents: [{ uri: "debug://status", mimeType: "text/markdown", text: status }],
+        };
+    });
+    // ━━━ RESOURCE: debug_errors ━━━
+    // Error-only view — cuts through the noise. Shows only errors/warnings across all sources.
+    server.registerResource("debug_errors", "debug://errors", {
+        description: "Errors only — deduplicated errors and warnings from terminal, browser, build, and TypeScript. Read this when you need signal without noise.",
+        mimeType: "text/markdown",
+    }, async () => {
+        const lines = ["# Errors & Warnings (all sources)\n"];
+        const live = readLiveContext(cwd);
+        const local = peekRecentOutput({ terminalLines: 100, browserLines: 50, buildErrors: 30 });
+        let totalErrors = 0;
+        // Terminal errors
+        const terminalSource = live?.terminal ?? local.terminal.map((c) => {
+            const d = c.data;
+            return { timestamp: c.timestamp, text: String(d?.text ?? d?.data ?? c.data), stream: "stderr" };
+        });
+        const termErrors = terminalSource.filter((t) => /error|warn|panic|failed|crash|exception/i.test(t.text));
+        if (termErrors.length > 0) {
+            for (const t of collapseRepeats(termErrors.slice(-15).map((e) => `[terminal] ${e.text}`)))
+                lines.push(t);
+            totalErrors += termErrors.length;
+        }
+        // Browser errors
+        const browserSource = live?.browser ?? local.browser.map((c) => ({
+            timestamp: c.timestamp, source: c.source, data: c.data,
+        }));
+        const browserErrors = browserSource.filter((b) => {
+            const d = typeof b.data === "object" && b.data !== null ? b.data : null;
+            return d?.level === "error" || d?.level === "warn" || b.source === "browser-error" || b.source === "browser-network";
+        });
+        if (browserErrors.length > 0) {
+            for (const b of browserErrors.slice(-15)) {
+                lines.push(`[browser] ${formatBrowserEvent(b)}`);
+            }
+            totalErrors += browserErrors.length;
+        }
+        // Build errors
+        const buildErrors = live?.buildErrors ?? local.buildErrors.map((e) => ({
+            tool: e.tool, file: e.file, line: e.line, code: e.code, message: e.message,
+        }));
+        if (buildErrors.length > 0) {
+            for (const e of buildErrors) {
+                lines.push(`[build] ${e.tool} ${e.file}${e.line ? `:${e.line}` : ""} — ${e.message}`);
+            }
+            totalErrors += buildErrors.length;
+        }
+        // TypeScript errors
+        const tscErrors = runQuickTsc(cwd);
+        if (tscErrors.length > 0) {
+            for (const e of tscErrors)
+                lines.push(`[tsc] ${e}`);
+            totalErrors += tscErrors.length;
+        }
+        if (totalErrors === 0) {
+            lines.push("**No errors detected.** App running cleanly.");
+        }
+        else {
+            lines.push("");
+            lines.push(`**${totalErrors} total error(s)/warning(s).**`);
+        }
+        return {
+            contents: [{ uri: "debug://errors", mimeType: "text/markdown", text: lines.join("\n") }],
         };
     });
     // ━━━ TOOL 1: debug_investigate ━━━
@@ -546,72 +666,65 @@ Start every debugging session with this tool.`,
         if (tscErrors.length > 0) {
             response.typeErrors = tscErrors;
         }
-        // Auto-include runtime output so agent sees live dev server state
-        const hasTerminal = recentOutput.terminal.length > 0;
-        const hasBrowser = recentOutput.browser.length > 0;
-        const hasTauri = tauriLogs.length > 0;
-        if (hasTerminal || hasBrowser || hasTauri || recentOutput.buildErrors.length > 0) {
-            const runtimeContext = {};
-            if (hasTerminal) {
-                // Include ALL recent output — agent needs full context, not just errors
-                const allTerminal = recentOutput.terminal.slice(-50).map((c) => {
-                    const d = typeof c.data === "object" && c.data !== null ? c.data : null;
-                    return { timestamp: c.timestamp, text: d?.text ?? d?.data ?? String(c.data) };
-                });
-                runtimeContext.terminalOutput = allTerminal;
-                // Also flag errors specifically for quick scanning
-                const termErrors = recentOutput.terminal.filter((c) => {
-                    const d = typeof c.data === "object" && c.data !== null ? c.data : null;
-                    const text = d?.text ?? d?.data ?? String(c.data);
-                    const str = typeof text === "string" ? text : JSON.stringify(text);
-                    return /error|warn|panic|failed|crash|exception|SIGTERM|SIGKILL/i.test(str);
-                });
-                if (termErrors.length > 0) {
-                    runtimeContext.terminalErrors = termErrors.slice(-15).map((c) => {
+        // Auto-include runtime output — but skip if agent just read debug://status
+        const statusFresh = lastStatusReadAt && (Date.now() - new Date(lastStatusReadAt).getTime()) < 60_000;
+        if (statusFresh) {
+            // Agent already has runtime context from status read — just reference it
+            response.runtimeContext = `See debug://status (read ${Math.round((Date.now() - new Date(lastStatusReadAt).getTime()) / 1000)}s ago) for live terminal/browser output.`;
+        }
+        else {
+            const hasTerminal = recentOutput.terminal.length > 0;
+            const hasBrowser = recentOutput.browser.length > 0;
+            const hasTauri = tauriLogs.length > 0;
+            if (hasTerminal || hasBrowser || hasTauri) {
+                const runtimeContext = {};
+                if (hasTerminal) {
+                    // Only include errors — full output is in debug://status
+                    const termErrors = recentOutput.terminal.filter((c) => {
                         const d = typeof c.data === "object" && c.data !== null ? c.data : null;
-                        return { timestamp: c.timestamp, text: d?.text ?? d?.data ?? String(c.data) };
+                        const text = d?.text ?? d?.data ?? String(c.data);
+                        const str = typeof text === "string" ? text : JSON.stringify(text);
+                        return /error|warn|panic|failed|crash|exception|SIGTERM|SIGKILL/i.test(str);
+                    });
+                    if (termErrors.length > 0) {
+                        runtimeContext.terminalErrors = termErrors.slice(-15).map((c) => {
+                            const d = typeof c.data === "object" && c.data !== null ? c.data : null;
+                            return { timestamp: c.timestamp, text: d?.text ?? d?.data ?? String(c.data) };
+                        });
+                    }
+                }
+                if (hasBrowser) {
+                    runtimeContext.browserConsole = recentOutput.browser.slice(-20).map((c) => {
+                        const d = typeof c.data === "object" && c.data !== null ? c.data : null;
+                        return { timestamp: c.timestamp, source: c.source, ...(d ?? { text: String(c.data) }) };
                     });
                 }
-                runtimeContext.terminalBufferSize = recentOutput.counts.terminal;
+                if (hasTauri) {
+                    runtimeContext.tauriLogs = tauriLogs.slice(-10).map((c) => {
+                        const d = typeof c.data === "object" && c.data !== null ? c.data : null;
+                        return { timestamp: c.timestamp, text: d?.text ?? String(c.data) };
+                    });
+                }
+                // Skip recentBuildErrors — already in top-level buildErrors field
+                response.runtimeContext = runtimeContext;
             }
-            if (hasBrowser) {
-                // Include ALL browser logs — agent needs full picture
-                runtimeContext.browserConsole = recentOutput.browser.slice(-50).map((c) => {
-                    const d = typeof c.data === "object" && c.data !== null ? c.data : null;
-                    return { timestamp: c.timestamp, source: c.source, ...(d ?? { text: String(c.data) }) };
-                });
-                runtimeContext.browserBufferSize = recentOutput.counts.browser;
-            }
-            if (hasTauri) {
-                runtimeContext.tauriLogs = tauriLogs.slice(-15).map((c) => {
-                    const d = typeof c.data === "object" && c.data !== null ? c.data : null;
-                    return { timestamp: c.timestamp, text: d?.text ?? String(c.data) };
-                });
-            }
-            if (recentOutput.buildErrors.length > 0) {
-                runtimeContext.recentBuildErrors = recentOutput.buildErrors.map((e) => ({
-                    tool: e.tool, file: e.file, line: e.line, code: e.code, message: e.message,
-                }));
-            }
-            response.runtimeContext = runtimeContext;
         }
         // Include past solutions if found (with staleness + causal info)
         if (pastSolutions.length > 0) {
             const fresh = pastSolutions.filter((s) => !s.staleness.stale);
             response.pastSolutions = pastSolutions.map((s) => ({
                 problem: s.problem,
-                diagnosis: s.diagnosis,
-                files: s.files,
+                diagnosis: s.diagnosis?.slice(0, 300) ?? null,
+                files: s.files?.slice(0, 5) ?? [],
                 relevance: Math.round(s.relevance * 100) + "%",
                 confidence: Math.round(s.confidence * 100) + "%",
                 stale: s.staleness.stale,
-                staleness: s.staleness.stale ? s.staleness.reason : undefined,
                 rootCause: s.rootCause ?? undefined,
             }));
             const topDiag = fresh.length > 0 ? fresh[0].diagnosis?.slice(0, 200) : null;
             response.nextStep = fresh.length > 0
-                ? `Found ${fresh.length} fresh past solution(s)${topDiag ? `: "${topDiag}"` : ""}. Review pastSolutions for full details.`
-                : `Found ${pastSolutions.length} past solution(s) but all are outdated (code changed). Investigate fresh.`;
+                ? `Investigation complete — source code, git context, and runtime data included. Also found ${fresh.length} past solution(s)${topDiag ? `: "${topDiag}"` : ""}. Check if they apply.`
+                : `Investigation complete — source code, git context, runtime data included. Found ${pastSolutions.length} past solution(s) but code has changed — investigate fresh.`;
             // Proactive memory: surface high-confidence FRESH matches prominently
             const highConfidence = pastSolutions.filter((s) => (s.confidence ?? 0) >= 0.8 && !s.staleness.stale);
             if (highConfidence.length > 0) {
@@ -623,7 +736,7 @@ Start every debugging session with this tool.`,
                     rootCause: top.rootCause ?? undefined,
                     message: `High-confidence match (${Math.round((top.confidence ?? 0) * 100)}%): "${top.diagnosis}". This fix was verified before — try applying it directly.`,
                 };
-                response.nextStep = `Proactive suggestion: ${top.diagnosis}. Verify with debug_verify after applying.`;
+                response.nextStep = `Investigation complete. High-confidence match (${Math.round((top.confidence ?? 0) * 100)}%): "${top.diagnosis?.slice(0, 150)}". Full investigation data also included — verify the match applies.`;
             }
         }
         else {
@@ -708,22 +821,31 @@ Start every debugging session with this tool.`,
                 tools.push("ghost_screenshot", "ghost_read");
             if (envCaps?.visual.claudePreviewConfigured)
                 tools.push("preview_screenshot", "preview_snapshot");
+            const visualActions = [];
+            if (isGhostConnected()) {
+                visualActions.push("Screenshot already captured", "Use debug_visual for more captures");
+            }
+            else if (tools.length > 0) {
+                visualActions.push(`Capture screenshot with ${tools[0]}`);
+            }
+            visualActions.push("Pass suspect CSS/component file paths in 'files' parameter for targeted source extraction");
             response.visualHint = {
                 isVisualBug: true,
                 message: isGhostConnected()
-                    ? "Visual/CSS bug detected. Screenshot captured automatically."
+                    ? "Visual/layout bug detected. Screenshot captured automatically."
                     : tools.length > 0
-                        ? `Visual/CSS bug detected. Use ${tools[0]} to capture the current state.`
-                        : "Visual/CSS bug detected. Use debug_setup action='install' integration='ghost-os' for visual debugging.",
-                suggestedActions: isGhostConnected()
-                    ? ["Screenshot already captured", "Use debug_visual for more captures"]
-                    : tools.length > 0
-                        ? [`Take a screenshot with ${tools[0]}`]
-                        : ["Install Ghost OS for visual debugging"],
+                        ? `Visual/layout bug detected. Use ${tools[0]} to see the rendered state — more useful than logs for CSS issues.`
+                        : "Visual/layout bug detected. For CSS issues, pass suspect file paths in 'files' parameter. 0 stack frames is expected for layout bugs.",
+                suggestedActions: visualActions,
             };
-            // Append to nextStep
+            // Append to nextStep — make it actionable for layout bugs
             if (typeof response.nextStep === "string") {
-                response.nextStep += " (Visual bug detected — screenshot recommended.)";
+                const visualNext = isGhostConnected()
+                    ? "Screenshot captured."
+                    : tools.length > 0
+                        ? `Use ${tools[0]} to see the actual rendered state.`
+                        : "Pass CSS/component files in 'files' for source context.";
+                response.nextStep += ` Visual/layout bug — ${visualNext}`;
             }
         }
         // Hint when no source code could be extracted
@@ -745,7 +867,7 @@ Start every debugging session with this tool.`,
             },
         });
         const budgeted = fitToBudget(response, { maxTokens: 4000 });
-        return { content: [{ type: "text", text: JSON.stringify(budgeted, null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify(budgeted) }] };
     });
     // ━━━ TOOL 2: debug_instrument ━━━
     server.registerTool("debug_instrument", {
@@ -799,14 +921,59 @@ Supports JS/TS/Python/Go.`,
 Returns tagged captures linked to hypotheses, plus any errors detected.
 Results are paginated — only the most recent captures are returned.`,
         inputSchema: {
-            sessionId: z.string(),
+            sessionId: z.string().optional().describe("Existing session ID, or omit to read output without a session"),
             command: z.string().optional().describe("Command to run (e.g., 'npm test')"),
             limit: z.number().optional().describe("Max results (default 30)"),
             wait: z.boolean().optional().describe("Block until new output arrives (up to waitTimeoutMs). Use for long-running processes."),
             waitTimeoutMs: z.number().optional().describe("Max ms to wait for new output (default 30000, max 60000)"),
+            source: z.enum(["terminal", "browser", "all"]).optional().describe("Filter by source (default: all)"),
+            filter: z.string().optional().describe("Text pattern to match (e.g., 'SCROLL-DEBUG', 'error')"),
+            level: z.enum(["error", "warn", "all"]).optional().describe("Filter by log level"),
         },
-    }, async ({ sessionId, command, limit, wait, waitTimeoutMs }) => {
-        const session = loadSession(cwd, sessionId);
+    }, async ({ sessionId, command, limit, wait, waitTimeoutMs, source: sourceFilter, filter: textFilter, level: levelFilter }) => {
+        // Session is optional — auto-create only when running commands, otherwise work sessionless
+        let session = sessionId ? loadSession(cwd, sessionId) : null;
+        if (!session && command) {
+            session = createSession(cwd, `capture: ${command.slice(0, 60)}`);
+        }
+        // Filter helper — applies source/text/level filters to captures
+        const matchesFilters = (c) => {
+            // Source filter
+            if (sourceFilter && sourceFilter !== "all") {
+                if (sourceFilter === "terminal" && c.source !== "terminal")
+                    return false;
+                if (sourceFilter === "browser" && !c.source.startsWith("browser"))
+                    return false;
+            }
+            // Text filter (substring match)
+            if (textFilter) {
+                const d = c.data;
+                const str = typeof d?.text === "string" ? d.text
+                    : typeof d?.message === "string" ? d.message
+                        : JSON.stringify(c.data);
+                if (!str.toLowerCase().includes(textFilter.toLowerCase()))
+                    return false;
+            }
+            // Level filter
+            if (levelFilter && levelFilter !== "all") {
+                const d = c.data;
+                if (levelFilter === "error") {
+                    const isErr = d?.level === "error" || d?.stream === "stderr"
+                        || c.source === "browser-error" || c.source === "browser-network"
+                        || (typeof d?.text === "string" && /error|panic|crash|fatal/i.test(d.text));
+                    if (!isErr)
+                        return false;
+                }
+                else if (levelFilter === "warn") {
+                    const isWarn = d?.level === "error" || d?.level === "warn" || d?.stream === "stderr"
+                        || c.source === "browser-error" || c.source === "browser-network"
+                        || (typeof d?.text === "string" && /error|warn|panic|crash|fatal/i.test(d.text));
+                    if (!isWarn)
+                        return false;
+                }
+            }
+            return true;
+        };
         // Mode 3: Wait for new output (blocking poll)
         if (wait && !command) {
             const maxWait = Math.min(waitTimeoutMs ?? 30_000, 60_000);
@@ -814,76 +981,86 @@ Results are paginated — only the most recent captures are returned.`,
             if (result.timedOut) {
                 logActivity({ tool: "debug_capture", ts: Date.now(), summary: `waited ${Math.round(result.waitedMs / 1000)}s (timed out)`, metrics: { total: 0 } });
                 return text({
-                    waited: true,
-                    waitedMs: result.waitedMs,
-                    timedOut: true,
-                    total: 0,
-                    nextStep: `No new output in ${Math.round(result.waitedMs / 1000)}s. The process may be idle or complete. Try running a command or check debug://status.`,
+                    waited: true, waitedMs: result.waitedMs, timedOut: true, total: 0,
+                    nextStep: `No new output in ${Math.round(result.waitedMs / 1000)}s. Try running a command or check debug://status.`,
                 });
             }
-            // Add waited items to session
-            session.captures.push(...result.items);
-            saveSession(cwd, session);
-            const errors = result.items.filter((c) => {
+            const filtered = result.items.filter(matchesFilters);
+            if (session) {
+                session.captures.push(...filtered);
+                saveSession(cwd, session);
+            }
+            const errors = filtered.filter((c) => {
                 const d = c.data;
                 return d?.stream === "stderr" || d?.text?.toLowerCase().includes("error");
             });
-            logActivity({ tool: "debug_capture", ts: Date.now(), summary: `waited ${Math.round(result.waitedMs / 1000)}s, got ${result.items.length} lines`, metrics: { total: result.items.length, errors: errors.length } });
+            logActivity({ tool: "debug_capture", ts: Date.now(), summary: `waited ${Math.round(result.waitedMs / 1000)}s, got ${filtered.length} lines`, metrics: { total: filtered.length, errors: errors.length } });
             return text({
-                waited: true,
-                waitedMs: result.waitedMs,
-                timedOut: false,
-                total: result.items.length,
-                output: result.items.slice(0, 30).map((c) => ({ source: c.source, data: c.data })),
+                waited: true, waitedMs: result.waitedMs, timedOut: false,
+                total: filtered.length,
+                output: filtered.slice(0, 30).map((c) => ({ source: c.source, data: c.data })),
                 errors: errors.slice(0, 10).map((c) => c.data?.text),
                 nextStep: errors.length > 0
                     ? "New errors arrived. Use debug_investigate with the error text for full context."
-                    : `${result.items.length} new line(s) captured. Review output or wait again for more.`,
+                    : `${filtered.length} new line(s) captured.`,
             });
         }
         // Mode 1: Run command
-        if (command) {
+        if (command && session) {
             const safe = validateCommand(command);
             const caps = await runAndCapture(safe, 30_000);
             session.captures.push(...caps);
             saveSession(cwd, session);
         }
-        // Mode 2: Drain buffers
-        drainCaptures(cwd, session);
-        // Also drain Tauri log files if this is a Tauri project
-        const tauriLogs = readTauriLogs(cwd, 30);
-        if (tauriLogs.length > 0) {
-            session.captures.push(...tauriLogs);
-            saveSession(cwd, session);
+        // Mode 2: Drain/peek buffers
+        if (session) {
+            drainCaptures(cwd, session);
+            const tauriLogs = readTauriLogs(cwd, 30);
+            if (tauriLogs.length > 0) {
+                session.captures.push(...tauriLogs);
+                saveSession(cwd, session);
+            }
+            const recent = getRecentCaptures(session, { limit: limit ?? 30 });
+            const filtered = recent.captures.filter(matchesFilters);
+            const tagged = filtered.filter((c) => c.markerTag);
+            const errors = filtered.filter((c) => {
+                const d = c.data;
+                return d?.stream === "stderr" || d?.text?.toLowerCase().includes("error");
+            });
+            logActivity({ tool: "debug_capture", ts: Date.now(), summary: command ? `ran "${command}"` : "drained buffers", metrics: { total: recent.total, tagged: tagged.length, errors: errors.length } });
+            return text({
+                sessionId: session.id,
+                total: recent.total, showing: filtered.length,
+                tagged: tagged.map((c) => ({ tag: c.markerTag, hypothesis: c.hypothesisId, data: c.data })),
+                errors: errors.slice(0, 10).map((c) => c.data?.text),
+                output: filtered.slice(0, 15).map((c) => ({ source: c.source, data: c.data })),
+                nextStep: errors.length > 0
+                    ? "Errors detected. Use debug_investigate with the error text for full context."
+                    : tagged.length > 0
+                        ? "Instrumented output captured. Review tagged data to confirm/reject hypotheses."
+                        : recent.total === 0 && !command
+                            ? "No output captured. Try debug_capture with wait=true, or run a command."
+                            : "Output captured. Review the results.",
+            });
         }
-        const recent = getRecentCaptures(session, { limit: limit ?? 30 });
-        // Separate tagged (from instrumentation) vs untagged (ambient) captures
-        const tagged = recent.captures.filter((c) => c.markerTag);
-        const errors = recent.captures.filter((c) => {
+        // Sessionless mode — peek buffers without draining
+        const peeked = peekRecentOutput({ terminalLines: limit ?? 30, browserLines: limit ?? 30, buildErrors: 10 });
+        const allCaptures = [...peeked.terminal, ...peeked.browser];
+        const filtered = allCaptures.filter(matchesFilters);
+        const errors = filtered.filter((c) => {
             const d = c.data;
             return d?.stream === "stderr" || d?.text?.toLowerCase().includes("error");
         });
-        logActivity({ tool: "debug_capture", ts: Date.now(), summary: command ? `ran "${command}"` : "drained buffers", metrics: { total: recent.total, tagged: tagged.length, errors: errors.length } });
+        logActivity({ tool: "debug_capture", ts: Date.now(), summary: "peeked buffers (no session)", metrics: { total: filtered.length, errors: errors.length } });
         return text({
-            total: recent.total,
-            showing: recent.showing,
-            tagged: tagged.map((c) => ({
-                tag: c.markerTag,
-                hypothesis: c.hypothesisId,
-                data: c.data,
-            })),
+            total: filtered.length,
+            output: filtered.slice(0, 30).map((c) => ({ source: c.source, data: c.data })),
             errors: errors.slice(0, 10).map((c) => c.data?.text),
-            output: recent.captures.slice(0, 15).map((c) => ({
-                source: c.source,
-                data: c.data,
-            })),
             nextStep: errors.length > 0
                 ? "Errors detected. Use debug_investigate with the error text for full context."
-                : tagged.length > 0
-                    ? "Instrumented output captured. Review tagged data to confirm/reject hypotheses."
-                    : recent.total === 0 && !command
-                        ? "No output captured. Try debug_capture with wait=true to block until output arrives, or run a command like 'npm test'."
-                        : "No tagged output yet. Make sure the instrumented code path is executed.",
+                : filtered.length === 0
+                    ? "No matching output. Try adjusting filters or wait=true for new output."
+                    : "Output captured.",
         });
     });
     // ━━━ TOOL 4: debug_verify ━━━
@@ -1302,11 +1479,31 @@ Requires Chrome installed. Gracefully skips if unavailable.`,
     });
     // ━━━ TOOL: debug_setup ━━━
     // Check and install integrations
-    server.tool("debug_setup", "Check available integrations and install missing ones. Actions: check = list status, install = install integration, connect = connect Ghost OS, disconnect = disconnect Ghost OS.", {
-        action: z.enum(["check", "install", "connect", "disconnect"]).describe("check = list status, install = install an integration, connect = connect Ghost OS, disconnect = disconnect Ghost OS"),
+    server.tool("debug_setup", "Check available integrations and install missing ones. Actions: check = list status, install = install integration, connect = connect Ghost OS, disconnect = disconnect Ghost OS, check-update = check for newer version, update = update debug-toolkit to latest.", {
+        action: z.enum(["check", "install", "connect", "disconnect", "check-update", "update"]).describe("check = list status, install = install an integration, connect/disconnect = Ghost OS, check-update = check for newer version, update = update to latest"),
         integration: z.string().optional().describe("Integration id to install: lighthouse, chrome, ghost-os"),
     }, async ({ action, integration }) => {
         logActivity({ tool: "debug_setup", ts: Date.now(), summary: action === "install" ? `install ${integration ?? "?"}` : action });
+        if (action === "check-update") {
+            const update = checkForUpdate();
+            return text({
+                ...update,
+                message: update.updateAvailable
+                    ? `Update available: v${update.current} → v${update.latest}. Run debug_setup action='update' to upgrade, then restart Claude Code.`
+                    : `Already on latest version (v${update.current}).`,
+            });
+        }
+        if (action === "update") {
+            const result = runSelfUpdate();
+            return text({
+                ...result,
+                nextStep: result.success && result.from !== result.to
+                    ? "Updated successfully. Restart Claude Code to use the new version."
+                    : result.success
+                        ? "Already on latest version."
+                        : "Update failed. Try manually: npx -y debug-toolkit@latest",
+            });
+        }
         if (action === "connect") {
             resetConnectionState();
             const connected = await connectToGhostOs();

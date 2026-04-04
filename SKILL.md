@@ -1,12 +1,12 @@
 ---
 name: debug-toolkit
-description: "Runtime context layer for debugging. Captures terminal output, browser console, build errors, TypeScript errors, git diffs, and screenshots from the running app. MANDATORY for: any bug, error, issue, warning, crash, panic, layout problem, visual glitch, wrong behavior, performance issue, test failure, reviewing the running app, checking app health. Read debug://status FIRST — it's a live situation report. Call debug_investigate for deep analysis."
+description: "Runtime DevTools for AI agents. Captures terminal output, browser console, build errors, TypeScript errors, git diffs, and screenshots from the running app. MANDATORY for: any bug, error, issue, warning, crash, panic, layout problem, visual glitch, wrong behavior, performance issue, test failure, reviewing the running app, checking app health. Read debug://status FIRST — it's a live situation report. Read debug://errors for errors only. Call debug_investigate for deep analysis."
 tools: ["debug_investigate", "debug_recall", "debug_patterns", "debug_instrument", "debug_capture", "debug_verify", "debug_cleanup", "debug_session", "debug_perf", "debug_visual", "debug_setup"]
 ---
 
-# debug-toolkit — Runtime Context Layer
+# debug-toolkit — Runtime DevTools for AI Agents
 
-The toolkit captures what's actually happening at runtime — terminal output, browser console, build errors, TypeScript errors, git diffs, screenshots, and cross-session memory. It gives you information that reading files cannot provide.
+The toolkit captures what's actually happening at runtime — terminal output, browser console, build errors, TypeScript errors, git diffs, screenshots, and cross-session memory. It gives you the same signals a developer sees in browser DevTools and terminal.
 
 ## CRITICAL: Read debug://status FIRST
 
@@ -20,6 +20,10 @@ The toolkit captures what's actually happening at runtime — terminal output, b
 - Active debug sessions
 
 This is updated every 5 seconds. It tells you what's happening RIGHT NOW without any tool call.
+
+## Quick Error Check: debug://errors
+
+**Read `debug://errors` when you only need errors.** Compact, deduplicated view of errors/warnings from ALL sources (terminal, browser, build, TypeScript). No noise, no app logs — just signal.
 
 ## When to Activate — MANDATORY
 
@@ -121,9 +125,9 @@ Add tagged debug logging. Supports JS/TS, Python, Go, Rust.
 ```
 
 ### debug_capture
-Run a command and capture output, or drain buffered events.
+Run a command and capture output, or drain buffered events. SessionId is optional — omit to read console output directly.
 ```
-{ sessionId, command?: "npm test" }
+{ command?: "npm test", source?: "browser", filter?: "SCROLL-DEBUG", level?: "error" }
 ```
 
 ### debug_verify
@@ -142,10 +146,12 @@ Remove instrumentation and save diagnosis to memory.
 Lightweight session status.
 
 ### debug_setup
-Check/install integrations mid-conversation.
+Check/install integrations, check for updates, or update debug-toolkit.
 ```
-{ action: "check" | "install" | "connect" | "disconnect" }
+{ action: "check" | "install" | "connect" | "disconnect" | "check-update" | "update" }
 ```
+- `check-update` — compare installed version against npm registry
+- `update` — update debug-toolkit to latest, then restart Claude Code
 
 ## Rules
 

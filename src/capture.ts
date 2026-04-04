@@ -157,6 +157,70 @@ export const terminalBuffer = new RingBuffer<Capture>(500);
 export const browserBuffer = new RingBuffer<Capture>(200);
 export const buildBuffer = new RingBuffer<BuildError>(100);
 
+// --- Consecutive dedup tracking ---
+
+let lastTerminalText = "";
+let terminalRepeatCount = 0;
+
+let lastBrowserText = "";
+let browserRepeatCount = 0;
+
+function pushTerminalDeduped(capture: Capture): void {
+  const d = capture.data as Record<string, unknown> | null;
+  const text = String(d?.text ?? d?.data ?? "");
+  if (text === lastTerminalText && text.length > 0) {
+    terminalRepeatCount++;
+    return;
+  }
+  // Flush repeat count as a summary entry
+  if (terminalRepeatCount > 0) {
+    terminalBuffer.push({
+      id: newCaptureId(),
+      timestamp: new Date().toISOString(),
+      source: "terminal",
+      markerTag: null,
+      data: { text: `[repeated ${terminalRepeatCount + 1}× total]`, stream: "stderr" },
+      hypothesisId: null,
+    });
+    terminalRepeatCount = 0;
+  }
+  lastTerminalText = text;
+  terminalBuffer.push(capture);
+}
+
+function pushBrowserDeduped(capture: Capture): void {
+  const str = typeof capture.data === "object" ? JSON.stringify(capture.data) : String(capture.data);
+  if (str === lastBrowserText && str.length > 0) {
+    browserRepeatCount++;
+    return;
+  }
+  if (browserRepeatCount > 0) {
+    browserBuffer.push({
+      id: newCaptureId(),
+      timestamp: new Date().toISOString(),
+      source: "browser-console",
+      markerTag: null,
+      data: { level: "info", message: `[repeated ${browserRepeatCount + 1}× total]` },
+      hypothesisId: null,
+    });
+    browserRepeatCount = 0;
+  }
+  lastBrowserText = str;
+  browserBuffer.push(capture);
+}
+
+// Build error dedup by identity tuple
+const recentBuildErrorKeys = new Set<string>();
+
+function pushBuildErrorDeduped(err: BuildError): void {
+  const key = `${err.tool}:${err.file}:${err.line}:${err.code}`;
+  if (recentBuildErrorKeys.has(key)) return;
+  recentBuildErrorKeys.add(key);
+  // Cap the set so it doesn't grow unbounded
+  if (recentBuildErrorKeys.size > 200) recentBuildErrorKeys.clear();
+  buildBuffer.push(err);
+}
+
 /**
  * Peek at recent terminal + browser + build output WITHOUT draining.
  * Used by debug_investigate to auto-include runtime context.
@@ -295,12 +359,12 @@ export function pipeProcess(child: ChildProcess, commandLabel = "dev server"): v
 
       // Check full chunk for multiline build errors (Vite, tsc, etc.)
       const buildErr = parseBuildError(text);
-      if (buildErr) buildBuffer.push(buildErr);
+      if (buildErr) pushBuildErrorDeduped(buildErr);
 
       for (const line of text.split("\n")) {
         const t = line.trim();
         if (!t) continue;
-        terminalBuffer.push({
+        pushTerminalDeduped({
           id: newCaptureId(),
           timestamp: new Date().toISOString(),
           source: "terminal",
@@ -376,7 +440,7 @@ export function onBrowserEvent(event: { type: string; data: unknown; ts: number 
     ? "lighthouse"
     : (context ?? "webview");
 
-  browserBuffer.push({
+  pushBrowserDeduped({
     id: newCaptureId(),
     timestamp: new Date(event.ts).toISOString(),
     source: src,
@@ -571,8 +635,8 @@ export interface LiveContext {
  * Called periodically by the serve process.
  */
 export function writeLiveContext(cwd: string): void {
-  // Capture ALL output — agents need full context, not just errors
-  const recent = peekRecentOutput({ terminalLines: 200, browserLines: 100, buildErrors: 50 });
+  // Status shows max ~110 lines — no need to peek more than that
+  const recent = peekRecentOutput({ terminalLines: 100, browserLines: 50, buildErrors: 30 });
   const context: LiveContext = {
     updatedAt: new Date().toISOString(),
     terminal: recent.terminal.map((c) => {
