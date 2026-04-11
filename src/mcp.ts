@@ -1962,21 +1962,37 @@ Requires Chrome installed. Gracefully skips if unavailable.`,
             manualSteps: i.manualSteps,
           })),
           ghostOsConnected: isGhostConnected(),
-          teamMemory: {
-            configured: teamConfigured,
-            status: teamConfigured ? "active" : "not configured",
-            message: teamConfigured
-              ? "Team memory is active. Debug fixes are shared with your team."
-              : "Team memory is not configured. Set STACKPACK_EVENTS_URL and STACKPACK_API_KEY to share debug knowledge across your team.",
-            setup: teamConfigured ? undefined : [
-              "1. Sign up at stackpack.io to get an API key",
-              "2. Set environment variables:",
-              "   export STACKPACK_EVENTS_URL=https://your-stackpack-instance.fly.dev",
-              "   export STACKPACK_API_KEY=sk_sp_your_api_key",
-              "3. Restart Claude Code — team memory activates automatically",
-              "4. All team members with the same org share debugging knowledge",
-            ],
-          },
+          teamMemory: await (async () => {
+            if (!teamConfigured) {
+              return {
+                configured: false,
+                status: "not configured",
+                message: "Team memory is not configured. Set STACKPACK_EVENTS_URL and STACKPACK_API_KEY to share debug knowledge across your team.",
+                setup: [
+                  "1. Sign up at stackpack.io to get an API key",
+                  "2. Set environment variables:",
+                  "   export STACKPACK_EVENTS_URL=https://your-stackpack-instance.fly.dev",
+                  "   export STACKPACK_API_KEY=sk_sp_your_api_key",
+                  "3. Restart Claude Code — team memory activates automatically",
+                  "4. All team members with the same org share debugging knowledge",
+                ],
+              };
+            }
+            // Check actual platform health
+            const health = await teamClient!.checkHealth();
+            return {
+              configured: true,
+              platform: health.status,
+              reachable: health.reachable,
+              uptime: health.uptime ? `${Math.round(health.uptime / 60)}m` : undefined,
+              services: health.services,
+              message: health.reachable
+                ? `Team memory is active and healthy. Platform uptime: ${Math.round((health.uptime ?? 0) / 60)}m.`
+                : `Team memory is configured but the platform is unreachable.`,
+              ...(health.troubleshooting ? { troubleshooting: health.troubleshooting } : {}),
+              ...(health.error ? { error: health.error } : {}),
+            };
+          })(),
           summary: {
             available: integrations.filter((i) => i.available).map((i) => i.name),
             missing: integrations.filter((i) => !i.available).map((i) => i.name),

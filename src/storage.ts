@@ -74,6 +74,67 @@ export class TeamMemoryClient {
   }
 
   /**
+   * Check if the platform is reachable and healthy.
+   * Returns status info for display to the user.
+   */
+  async checkHealth(): Promise<{
+    reachable: boolean;
+    status: string;
+    uptime?: number;
+    services?: Record<string, string>;
+    error?: string;
+    troubleshooting?: string[];
+  }> {
+    try {
+      const res = await fetch(`${this.baseUrl}/api/health`, {
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (!res.ok) {
+        return {
+          reachable: true,
+          status: `unhealthy (HTTP ${res.status})`,
+          error: `Platform responded with ${res.status}`,
+          troubleshooting: [
+            res.status === 401 ? "API key may be invalid or expired. Check STACKPACK_API_KEY." : "",
+            res.status === 503 ? "Platform is starting up. Wait 10-15 seconds and retry." : "",
+            `Check platform logs: fly logs --app stackpack-platform`,
+          ].filter(Boolean),
+        };
+      }
+
+      const data = await res.json() as Record<string, unknown>;
+      return {
+        reachable: true,
+        status: "healthy",
+        uptime: data.uptime as number,
+        services: data.services as Record<string, string>,
+      };
+    } catch (err) {
+      const message = String(err);
+      const isTimeout = message.includes("timeout") || message.includes("abort");
+      const isDns = message.includes("ENOTFOUND") || message.includes("getaddrinfo");
+
+      return {
+        reachable: false,
+        status: "unreachable",
+        error: message,
+        troubleshooting: [
+          isTimeout
+            ? "Platform may be sleeping. Fly machines auto-wake but need 5-10s. Retry in a moment."
+            : isDns
+              ? `DNS resolution failed for ${this.baseUrl}. Check STACKPACK_EVENTS_URL.`
+              : `Network error connecting to ${this.baseUrl}.`,
+          "Verify: curl -s " + this.baseUrl + "/api/health",
+          "Check machine: fly status --app stackpack-platform",
+          "Wake machine: fly machine start --app stackpack-platform",
+        ],
+      };
+    }
+  }
+
+  /**
    * Push local memory entries to the team pool.
    * Deduplicates by error signature on the server side.
    */
