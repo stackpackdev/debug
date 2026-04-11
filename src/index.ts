@@ -18,6 +18,7 @@ import { startActivityFeed } from "./activity.js";
 import { startLoopWatcher } from "./watcher.js";
 import { generateCaptureScript, listPlatforms, type AgentPlatform } from "./browser-capture.js";
 import { startCaptureServer } from "./capture-server.js";
+import { generateFixGenerationPrompt, submitFixPrompt, listFixPrompts, lookupFixPrompt } from "./fix-library.js";
 import { banner, info, success, warn, error, dim, section, kv, printHelp, sym, c, select, spinner, type SelectOption } from "./cli.js";
 import { detectEnvironment, formatDoctorReport, listInstallable, installIntegration, type EnvironmentCapabilities } from "./adapters.js";
 import { checkForUpdate, getPackageVersion } from "./utils.js";
@@ -33,6 +34,9 @@ function parseArgs(argv: string[]) {
   }
   if (cmd === "setup") {
     return { command: "setup", port: null as number | null, childCommand: [] as string[], flags: args.slice(1) };
+  }
+  if (cmd === "fix") {
+    return { command: "fix", port: null as number | null, childCommand: [] as string[], flags: args.slice(1) };
   }
   if (cmd !== "serve") return { command: "mcp", port: null as number | null, childCommand: [] as string[], flags: [] as string[] };
 
@@ -1149,6 +1153,136 @@ async function main(): Promise<void> {
       } else {
         // Regular init setup
         info("Run 'spdg init' for project setup or 'spdg setup --agent' for closed agent setup.");
+      }
+      break;
+    }
+
+    case "fix": {
+      banner();
+      const subcommand = (parsed as any).flags?.[0] ?? "help";
+
+      if (subcommand === "generate") {
+        // Generate a Claude prompt for creating a fix prompt
+        section("Generate Fix Prompt");
+
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const ask = (q: string) => new Promise<string>((resolve) => rl.question(q, resolve));
+
+        const errorText = await ask("Paste the error text (or first line): ");
+        const sourceFile = await ask("Source file (or press Enter to skip): ");
+        const platformStr = await ask("Platform (lovable/bolt/replit/any): ");
+        const failedStr = await ask("Failed approaches (comma-separated, or Enter to skip): ");
+
+        rl.close();
+
+        const failed = failedStr.trim() ? failedStr.split(",").map((s) => s.trim()) : [];
+        const { claudePrompt, errorSignature } = generateFixGenerationPrompt({
+          errorText,
+          sourceFile: sourceFile || undefined,
+          platform: platformStr || "any",
+          failedApproaches: failed.length > 0 ? failed : undefined,
+          cwd,
+        });
+
+        // Save the prompt to a file for easy copying
+        const promptPath = join(cwd, ".debug", `fix-prompt-${errorSignature.slice(0, 8)}.md`);
+        const promptDir = join(cwd, ".debug");
+        if (!existsSync(promptDir)) mkdirSync(promptDir, { recursive: true });
+        writeFileSync(promptPath, claudePrompt);
+
+        console.log("");
+        section("Claude Prompt Generated");
+        console.log(claudePrompt.slice(0, 500) + "\n...\n");
+        info(`Full prompt saved to: ${c.bold}${promptPath}${c.reset}`);
+        info(`Copy it: ${c.bold}cat "${promptPath}" | pbcopy${c.reset}`);
+        console.log("");
+        info("Paste this into Claude. Then run:");
+        console.log(`   ${c.bold}spdg fix submit --sig ${errorSignature} --platform ${platformStr || "any"}${c.reset}`);
+        info(`Error signature: ${c.cyan}${errorSignature}${c.reset}`);
+
+      } else if (subcommand === "submit") {
+        // Submit a fix prompt to the library
+        section("Submit Fix Prompt");
+
+        // Parse flags
+        const flags = (parsed as any).flags as string[];
+        const sigIdx = flags.indexOf("--sig");
+        const platIdx = flags.indexOf("--platform");
+        const sig = sigIdx >= 0 ? flags[sigIdx + 1] : null;
+        const platform = platIdx >= 0 ? flags[platIdx + 1] : "any";
+
+        if (!sig) {
+          error("Missing --sig flag. Run 'spdg fix generate' first to get the error signature.");
+          break;
+        }
+
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const ask = (q: string) => new Promise<string>((resolve) => rl.question(q, resolve));
+
+        info("Paste the fix prompt that Claude generated (the text for the closed agent).");
+        info("End with an empty line.\n");
+
+        const lines: string[] = [];
+        const readLines = () => new Promise<string>((resolve) => {
+          const handler = (line: string) => {
+            if (line === "") {
+              rl.removeListener("line", handler);
+              resolve(lines.join("\n"));
+            } else {
+              lines.push(line);
+            }
+          };
+          rl.on("line", handler);
+        });
+
+        const fixPromptText = await readLines();
+        const explanation = await ask("\nBrief explanation (why this fix works): ");
+        const errorExample = await ask("Example error message this fixes: ");
+
+        rl.close();
+
+        const entry = submitFixPrompt(cwd, {
+          errorSignature: sig,
+          errorType: "Unknown", // Will be enriched from captures
+          errorExample,
+          platform: platform ?? "any",
+          fixPrompt: fixPromptText,
+          explanation,
+          failedApproaches: [],
+        });
+
+        console.log("");
+        success(`Fix prompt submitted! ID: ${entry.id}`);
+        info(`Signature: ${c.cyan}${sig}${c.reset}`);
+        info(`Platform: ${platform}`);
+        info("This fix will be shown to users who hit the same error.");
+
+      } else if (subcommand === "list") {
+        // List all fix prompts in the library
+        section("Fix Prompt Library");
+        const entries = listFixPrompts(cwd);
+        if (entries.length === 0) {
+          info("No fix prompts yet. Run 'spdg fix generate' to create your first one.");
+        } else {
+          for (const entry of entries) {
+            const rate = entry.successCount + entry.failureCount > 0
+              ? Math.round(entry.successCount / (entry.successCount + entry.failureCount) * 100) + "%"
+              : "no data";
+            console.log(`  ${c.cyan}${entry.errorSignature.slice(0, 8)}${c.reset} [${entry.platform}] ${rate} success`);
+            console.log(`    Error: ${entry.errorExample.slice(0, 80)}`);
+            console.log(`    Fix: ${entry.fixPrompt.slice(0, 100)}...`);
+            console.log("");
+          }
+          info(`${entries.length} fix prompt(s) in library.`);
+        }
+
+      } else {
+        section("Fix Prompt Commands");
+        console.log(`
+  ${c.bold}spdg fix generate${c.reset}    Generate a Claude prompt with error context
+  ${c.bold}spdg fix submit${c.reset}      Submit a fix prompt to the library
+  ${c.bold}spdg fix list${c.reset}        List all fix prompts
+        `);
       }
       break;
     }

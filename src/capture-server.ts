@@ -12,8 +12,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-interface CaptureEvent {
-  type: "error" | "rejection" | "console" | "network" | "terminal";
+export interface CaptureEvent {
+  type: "error" | "rejection" | "console" | "network" | "terminal" | "agent_chat" | "agent_message" | "editor_change";
   ts: number;
   source: string;
   message?: string;
@@ -29,6 +29,12 @@ interface CaptureEvent {
   error?: string;
   level?: string;
   text?: string;
+  // Agent chat fields
+  msgIndex?: number;
+  streaming?: boolean;
+  // Editor change fields
+  length?: number;
+  preview?: string;
 }
 
 interface CaptureServerOptions {
@@ -79,6 +85,10 @@ export function startCaptureServer(
   const recentErrors: Array<{ timestamp: string; text: string; source: string }> = [];
   const MAX_RECENT = 50;
 
+  // Buffer for agent chat messages (for fix-prompt extraction and training data)
+  const recentAgentMessages: Array<{ timestamp: string; text: string; msgIndex: number; complete: boolean }> = [];
+  const MAX_AGENT_MESSAGES = 20;
+
   wss.on("connection", (ws: WebSocket) => {
     ws.on("message", (data: Buffer | string) => {
       try {
@@ -97,8 +107,19 @@ export function startCaptureServer(
         });
         if (recentErrors.length > MAX_RECENT) recentErrors.shift();
 
+        // Buffer agent chat messages separately (for fix-prompt extraction)
+        if (event.type === "agent_chat" || event.type === "agent_message") {
+          recentAgentMessages.push({
+            timestamp: new Date(event.ts ?? Date.now()).toISOString(),
+            text: (event.text ?? "").slice(0, 2000),
+            msgIndex: event.msgIndex ?? 0,
+            complete: event.type === "agent_message",
+          });
+          if (recentAgentMessages.length > MAX_AGENT_MESSAGES) recentAgentMessages.shift();
+        }
+
         // Write to live-context.json so the watcher and MCP can see it
-        writeBrowserContext(cwd, recentErrors);
+        writeBrowserContext(cwd, recentErrors, recentAgentMessages);
       } catch {
         // Ignore malformed events
       }
@@ -124,6 +145,7 @@ export function startCaptureServer(
 function writeBrowserContext(
   cwd: string,
   events: Array<{ timestamp: string; text: string; source: string }>,
+  agentMessages?: Array<{ timestamp: string; text: string; msgIndex: number; complete: boolean }>,
 ): void {
   const dir = join(cwd, ".debug");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -136,7 +158,7 @@ function writeBrowserContext(
     }
   } catch { /* start fresh */ }
 
-  // Merge: keep terminal/build data from serve mode, add browser events
+  // Merge: keep terminal/build data from serve mode, add browser events + agent chat
   const merged = {
     ...existing,
     updatedAt: new Date().toISOString(),
@@ -145,9 +167,11 @@ function writeBrowserContext(
       source: "browser-console" as const,
       data: { level: "error", message: e.text },
     })),
+    agentChat: agentMessages ?? (existing.agentChat as unknown[] ?? []),
     counts: {
       ...(existing.counts as Record<string, number> ?? {}),
       browser: events.length,
+      agentMessages: agentMessages?.length ?? 0,
     },
   };
 

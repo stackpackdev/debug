@@ -186,6 +186,15 @@ export interface MemoryEntry {
   rootCause: CausalLink | null;
   // What didn't work — populated from session.failedApproaches on cleanup
   failedApproaches?: string[];
+  // The fix prompt: the actual instruction that resolved the error.
+  // For closed agents: the text the user pasted into the agent's chat.
+  // For open agents: the diagnosis text or the agent's own fix description.
+  // This is the OUTPUT for fine-tuning training triplets.
+  fixPrompt?: string;
+  // Which platform/agent produced the buggy code
+  platform?: string;             // "lovable" | "bolt" | "replit" | "claude-code" | "cursor" | etc
+  // How the fix was found
+  fixMethodology?: string[];     // ["investigate", "instrument", "capture", "verify"]
   timesRecalled: number;
   timesUsed: number;
   archived: boolean;

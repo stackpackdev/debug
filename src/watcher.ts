@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { execSync } from "node:child_process";
 import { recall } from "./memory.js";
 import { signatureFromError } from "./signature.js";
+import { lookupFixPrompt } from "./fix-library.js";
 
 // --- Types ---
 
@@ -139,17 +140,31 @@ function analyze(cwd: string): WatcherAlert[] {
           suggestion: "This error isn't being fixed by the current approach. Try a different strategy.",
         });
 
-        // Check memory for a known fix
+        // Check fix library first (curated prompts), then general memory
         try {
-          const matches = recall(cwd, errorText, 1);
-          if (matches.length > 0 && !matches[0].staleness.stale) {
+          const fixEntry = lookupFixPrompt(cwd, errorText, null);
+          if (fixEntry) {
+            const rate = fixEntry.successCount + fixEntry.failureCount > 0
+              ? `${Math.round(fixEntry.successCount / (fixEntry.successCount + fixEntry.failureCount) * 100)}% success rate`
+              : "new fix";
             alerts.push({
               type: "recall_available",
               severity: "info",
-              message: `Known fix exists in debug memory`,
-              suggestion: matches[0].diagnosis,
-              recalledFix: matches[0].rootCause?.fixDescription ?? matches[0].diagnosis,
+              message: `Curated fix prompt available (${rate})`,
+              suggestion: fixEntry.explanation,
+              recalledFix: fixEntry.fixPrompt,
             });
+          } else {
+            const matches = recall(cwd, errorText, 1);
+            if (matches.length > 0 && !matches[0].staleness.stale) {
+              alerts.push({
+                type: "recall_available",
+                severity: "info",
+                message: `Known fix exists in debug memory`,
+                suggestion: matches[0].diagnosis,
+                recalledFix: matches[0].rootCause?.fixDescription ?? matches[0].diagnosis,
+              });
+            }
           }
         } catch { /* recall failure is non-fatal */ }
 
