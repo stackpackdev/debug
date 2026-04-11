@@ -11,6 +11,7 @@ import { createServer, type Server } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileIssue } from "./fix-library.js";
 
 export interface CaptureEvent {
   type: "error" | "rejection" | "console" | "network" | "terminal" | "agent_chat" | "agent_message" | "editor_change";
@@ -40,6 +41,7 @@ export interface CaptureEvent {
 interface CaptureServerOptions {
   port: number;
   cwd: string;
+  platform?: string;
   onEvent?: (event: CaptureEvent) => void;
 }
 
@@ -89,6 +91,10 @@ export function startCaptureServer(
   const recentAgentMessages: Array<{ timestamp: string; text: string; msgIndex: number; complete: boolean }> = [];
   const MAX_AGENT_MESSAGES = 20;
 
+  // Context tracking for auto-filed issues
+  const recentNetworkErrors: string[] = [];
+  let lastEditorContent: string | null = null;
+
   wss.on("connection", (ws: WebSocket) => {
     ws.on("message", (data: Buffer | string) => {
       try {
@@ -116,6 +122,30 @@ export function startCaptureServer(
             complete: event.type === "agent_message",
           });
           if (recentAgentMessages.length > MAX_AGENT_MESSAGES) recentAgentMessages.shift();
+        }
+
+        // Auto-file issues for error events
+        if (event.type === "error" || event.type === "rejection") {
+          try {
+            fileIssue(cwd, event, {
+              platform: opts.platform ?? "unknown",
+              recentAgentMessages: recentAgentMessages.map((m) => m.text),
+              editorContent: lastEditorContent,
+              recentNetworkErrors: recentNetworkErrors.slice(-5),
+            });
+          } catch { /* filing failure is non-fatal */ }
+        }
+
+        // Track network errors for issue context
+        if (event.type === "network") {
+          const netErr = `${event.method ?? "GET"} ${event.url ?? "?"} → ${event.status ?? event.error ?? "failed"}`;
+          recentNetworkErrors.push(netErr);
+          if (recentNetworkErrors.length > 20) recentNetworkErrors.shift();
+        }
+
+        // Track editor content for issue context
+        if (event.type === "editor_change" && event.preview) {
+          lastEditorContent = event.preview;
         }
 
         // Write to live-context.json so the watcher and MCP can see it
