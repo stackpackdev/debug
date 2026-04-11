@@ -16,6 +16,8 @@ import { installHook, uninstallHook } from "./hook.js";
 import { cleanupFromManifest } from "./cleanup.js";
 import { startActivityFeed } from "./activity.js";
 import { startLoopWatcher } from "./watcher.js";
+import { generateCaptureScript, listPlatforms, type AgentPlatform } from "./browser-capture.js";
+import { startCaptureServer } from "./capture-server.js";
 import { banner, info, success, warn, error, dim, section, kv, printHelp, sym, c, select, spinner, type SelectOption } from "./cli.js";
 import { detectEnvironment, formatDoctorReport, listInstallable, installIntegration, type EnvironmentCapabilities } from "./adapters.js";
 import { checkForUpdate, getPackageVersion } from "./utils.js";
@@ -26,10 +28,13 @@ function parseArgs(argv: string[]) {
   const args = argv.slice(2);
   const cmd = args[0] ?? "mcp"; // DEFAULT: pure MCP server (zero-config!)
 
-  if (["clean", "init", "uninstall", "doctor", "demo", "help", "--help", "-h", "mcp", "export", "import", "update"].includes(cmd)) {
-    return { command: cmd.replace(/^-+/, ""), port: null as number | null, childCommand: [] as string[] };
+  if (["clean", "init", "uninstall", "doctor", "demo", "help", "--help", "-h", "mcp", "export", "import", "update", "watch"].includes(cmd)) {
+    return { command: cmd.replace(/^-+/, ""), port: null as number | null, childCommand: [] as string[], flags: args.slice(1) };
   }
-  if (cmd !== "serve") return { command: "mcp", port: null as number | null, childCommand: [] as string[] };
+  if (cmd === "setup") {
+    return { command: "setup", port: null as number | null, childCommand: [] as string[], flags: args.slice(1) };
+  }
+  if (cmd !== "serve") return { command: "mcp", port: null as number | null, childCommand: [] as string[], flags: [] as string[] };
 
   let port: number | null = null;
   const child: string[] = [];
@@ -1040,6 +1045,111 @@ async function main(): Promise<void> {
         proxyHandle?.close();
         process.exit(code ?? 0);
       });
+      break;
+    }
+
+    case "watch": {
+      // Standalone watcher — no dev server, just monitors .debug/live-context.json
+      // Use when the dev server is already running (or a closed agent is running it)
+      banner();
+      section("Watch Mode");
+      info("Monitoring for errors and loops. Press Ctrl+C to stop.");
+      dim("Errors are captured from .debug/live-context.json and the browser capture server.");
+
+      // Start the browser capture server so console scripts can send events
+      const capturePort = 3100;
+      const captureServer = startCaptureServer({
+        port: capturePort,
+        cwd,
+        onEvent: (evt) => {
+          const level = evt.type === "error" || evt.type === "rejection" ? "error" : "warn";
+          const text = evt.message ?? evt.args ?? evt.reason ?? evt.text ?? evt.error ?? "";
+          if (level === "error") {
+            console.log(`  \x1b[31m${sym.cross}\x1b[0m ${text.slice(0, 120)}`);
+          }
+        },
+      });
+      info(`Browser capture server listening on ws://localhost:${capturePort}/__spdg/ws`);
+
+      // Start the loop watcher
+      const watcher = startLoopWatcher(cwd);
+
+      // Start live context writer (in case serve isn't running)
+      const liveWriter = startLiveContextWriter(cwd);
+
+      const cleanup = () => {
+        watcher.stop();
+        liveWriter.stop();
+        captureServer.stop();
+      };
+      process.on("SIGINT", cleanup);
+      process.on("SIGTERM", cleanup);
+
+      // Keep alive
+      setInterval(() => {}, 60_000);
+      break;
+    }
+
+    case "setup": {
+      banner();
+
+      const isAgentSetup = (parsed as any).flags?.includes("--agent");
+
+      if (isAgentSetup) {
+        // Agent platform setup wizard
+        section("Closed Agent Setup");
+        info("Set up error monitoring for a closed AI agent platform.");
+        info("This lets you detect loops and recall fixes while using Lovable, Bolt, Replit, etc.\n");
+
+        const platforms = listPlatforms();
+        const platformOptions: SelectOption[] = platforms.map((p) => ({
+          label: p.name,
+          desc: p.description,
+          detail: "",
+        }));
+
+        const platformIdx = await select("Which agent platform do you use?", platformOptions);
+        const platform = platforms[platformIdx].id;
+        const platformName = platforms[platformIdx].name;
+
+        console.log("");
+        section("Setup Steps");
+
+        // Generate the capture script
+        const script = generateCaptureScript(platform, { wsPort: 3100 });
+
+        info(`1. Open your project in ${c.bold}${platformName}${c.reset}`);
+        info(`2. Open browser DevTools: ${c.dim}Cmd+Option+J (Mac) or Ctrl+Shift+J (Windows)${c.reset}`);
+        info("3. Paste this script in the Console tab:\n");
+
+        // Write script to a file for easy access
+        const scriptPath = join(cwd, ".debug", `capture-${platform}.js`);
+        const scriptDir = join(cwd, ".debug");
+        if (!existsSync(scriptDir)) mkdirSync(scriptDir, { recursive: true });
+        writeFileSync(scriptPath, script);
+
+        console.log(`${c.dim}${"─".repeat(60)}${c.reset}`);
+        // Show first 3 lines + hint
+        const scriptLines = script.split("\n").filter(Boolean);
+        console.log(`${c.green}${scriptLines.slice(0, 3).join("\n")}${c.reset}`);
+        if (scriptLines.length > 3) {
+          console.log(`${c.dim}  ... ${scriptLines.length - 3} more lines${c.reset}`);
+        }
+        console.log(`${c.dim}${"─".repeat(60)}${c.reset}`);
+
+        console.log("");
+        info(`Full script saved to: ${c.bold}${scriptPath}${c.reset}`);
+        info(`Copy it with: ${c.bold}cat ${scriptPath} | pbcopy${c.reset}`);
+
+        console.log("");
+        info("4. After pasting, run this to start monitoring:\n");
+        console.log(`   ${c.bold}spdg watch${c.reset}\n`);
+
+        success("Setup complete. Paste the script, then run spdg watch.");
+      } else {
+        // Regular init setup
+        info("Run 'spdg init' for project setup or 'spdg setup --agent' for closed agent setup.");
+      }
       break;
     }
   }
