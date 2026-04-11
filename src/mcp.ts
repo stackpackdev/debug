@@ -24,7 +24,7 @@ import { cleanupSession } from "./cleanup.js";
 import { drainCaptures, runAndCapture, getRecentCaptures, readTauriLogs, discoverTauriLogs, drainBuildErrors, peekRecentOutput, readLiveContext, setLighthouseRunning, waitForNewOutput, extractFilePathsFromError, getTrackedProcesses, type LiveContext } from "./capture.js";
 import { investigate, isVisualError } from "./context.js";
 import { validateCommand } from "./security.js";
-import { remember, recall, memoryStats, detectPatterns, maybeArchive, type CausalLink } from "./memory.js";
+import { remember, recall, markUsed, memoryStats, detectPatterns, maybeArchive, type CausalLink } from "./memory.js";
 import { triageError } from "./triage.js";
 import { generateSuggestions } from "./suggestions.js";
 import { METHODOLOGY } from "./methodology.js";
@@ -40,10 +40,16 @@ import {
 } from "./ghost-bridge.js";
 import { screenshotDir, saveScreenshot, getPackageVersion, checkForUpdate, runSelfUpdate } from "./utils.js";
 import { enableActivityWriter, logActivity } from "./activity.js";
+import { analyzeLoop } from "./loop.js";
+import { signatureFromError } from "./signature.js";
+import { TeamMemoryClient, mergeRecallResults, type TeamRecallResult } from "./storage.js";
 
 let cwd = process.cwd();
 let envCaps: EnvironmentCapabilities | null = null;
 export function setCwd(dir: string): void { cwd = dir; }
+
+// Team memory client — initialized from env vars, null if not configured
+const teamClient = TeamMemoryClient.fromEnv();
 
 // Cached update check — run once per MCP session, non-blocking
 let updateCheckResult: { updateAvailable: boolean; current: string; latest: string } | null = null;
@@ -64,6 +70,16 @@ let lastStatusReadAt: string | null = null;
 let lastStatusTerminalCount = 0;
 let lastStatusBrowserCount = 0;
 let lastStatusBuildErrorCount = 0;
+
+// Health trend — rolling window of error counts across status reads
+interface HealthSnapshot {
+  timestamp: string;
+  tscErrors: number;
+  buildErrors: number;
+  totalIssues: number;
+}
+const healthTrend: HealthSnapshot[] = [];
+const MAX_HEALTH_SNAPSHOTS = 20;
 
 interface VisualConfig {
   autoCapture: "auto" | "manual" | "off";
@@ -194,6 +210,7 @@ function buildLiveStatus(cwd: string, since?: { timestamp: string; terminalCount
       if (tscErrors.length > 0) sections.push(`TypeScript errors: ${tscErrors.length}`);
       sections.push("");
       appendSessions(sections, cwd);
+      appendLoopWarning(sections, cwd);
       appendUpdateNotice(sections);
       return sections.join("\n");
     }
@@ -221,6 +238,7 @@ function buildLiveStatus(cwd: string, since?: { timestamp: string; terminalCount
 
     appendTauriLogs(sections, cwd);
     appendSessions(sections, cwd);
+    appendLoopWarning(sections, cwd);
     return sections.join("\n");
   }
 
@@ -368,10 +386,45 @@ function buildLiveStatus(cwd: string, since?: { timestamp: string; terminalCount
     });
     const totalIssues = termErrors.length + live.buildErrors.length + browserErrors.length + tscErrors.length;
 
+    // Record health snapshot for trend tracking
+    healthTrend.push({
+      timestamp: new Date().toISOString(),
+      tscErrors: tscErrors.length,
+      buildErrors: live.buildErrors.length,
+      totalIssues,
+    });
+    if (healthTrend.length > MAX_HEALTH_SNAPSHOTS) healthTrend.shift();
+
     if (totalIssues > 0) {
       sections.push(`**${totalIssues} issue(s) detected.** Call \`debug_investigate\` with the specific error for deep analysis.\n`);
     } else {
       sections.push("**No errors detected.** App running cleanly.\n");
+    }
+
+    // Health trend — show if we have enough data points
+    if (healthTrend.length >= 3) {
+      const recent = healthTrend.slice(-5);
+      const first = recent[0].totalIssues;
+      const last = recent[recent.length - 1].totalIssues;
+      const direction = last < first ? "improving" : last > first ? "degrading" : "stable";
+      const trend = recent.map((s) => String(s.totalIssues)).join(" → ");
+
+      if (direction === "degrading") {
+        sections.push(`## ⚠ Health Trend: DEGRADING\n`);
+        sections.push(`Issues: ${trend}`);
+        // Find the pivot point
+        let pivotIdx = 0;
+        for (let i = 1; i < recent.length; i++) {
+          if (recent[i].totalIssues > recent[i - 1].totalIssues) { pivotIdx = i; break; }
+        }
+        if (pivotIdx > 0) {
+          sections.push(`Started degrading around ${recent[pivotIdx].timestamp.split("T")[1]?.slice(0, 8) ?? "unknown"}`);
+        }
+        sections.push("Your recent changes may have introduced new errors.\n");
+      } else if (direction === "improving" && first > 0) {
+        sections.push(`## Health Trend: Improving\n`);
+        sections.push(`Issues: ${trend} — getting better.\n`);
+      }
     }
   }
 
@@ -379,6 +432,7 @@ function buildLiveStatus(cwd: string, since?: { timestamp: string; terminalCount
   appendActiveProcesses(sections);
   appendVisualStatus(sections);
   appendSessions(sections, cwd);
+  appendLoopWarning(sections, cwd);
   appendUpdateNotice(sections);
 
   return sections.join("\n");
@@ -437,6 +491,23 @@ function appendTauriLogs(sections: string[], cwd: string): void {
       sections.push(typeof d?.text === "string" ? d.text : JSON.stringify(d));
     }
     sections.push("```\n");
+  }
+}
+
+function appendLoopWarning(sections: string[], cwd: string): void {
+  const { active } = listSessionSummaries(cwd);
+  if (active.length === 0) return;
+
+  // Check the most recent active session for loop signals
+  const session = loadSession(cwd, active[0].id);
+  const loopAnalysis = analyzeLoop(session, cwd);
+  if (loopAnalysis.looping) {
+    sections.push(`\n**⚠ LOOP WARNING (${loopAnalysis.severity})**`);
+    sections.push(loopAnalysis.recommendation);
+    for (const sig of loopAnalysis.signals) {
+      sections.push(`  • ${sig.message}`);
+    }
+    sections.push("");
   }
 }
 
@@ -681,9 +752,25 @@ Start every debugging session with this tool.`,
     // Check memory for past solutions to similar errors
     const pastSolutions = recall(cwd, errorText, 3);
 
-    // Track memory hit on session for telemetry
+    // Track memory hit on session for feedback loop
     if (pastSolutions.length > 0) {
-      (session as any)._memoryHit = true;
+      session._memoryHit = true;
+      session._recalledEntryIds = pastSolutions.map((s) => s.id);
+      session._recalledFiles = [...new Set(pastSolutions.flatMap((s) => s.files))];
+    }
+
+    // Team recall — if local results are thin, async query team memory
+    let teamResults: TeamRecallResult[] = [];
+    if (teamClient && pastSolutions.length < 3) {
+      const sourceFiles = result.sourceCode.map((s) => s.relativePath);
+      const sig = signatureFromError(errorText, sourceFiles[0] ?? null);
+      try {
+        teamResults = await teamClient.recall(errorText, {
+          errorSignature: sig,
+          sourceFile: sourceFiles[0],
+          limit: 3 - pastSolutions.length,
+        });
+      } catch { /* team recall failure is non-fatal */ }
     }
 
     // Store as capture (include hint files for file tracking in cleanup)
@@ -697,6 +784,27 @@ Start every debugging session with this tool.`,
         sourceFiles: result.sourceCode.map((s) => s.relativePath),
       },
       hypothesisId: null,
+    });
+    // Error trajectory: track how the error evolves across investigations
+    if (!session.errorTrajectory) session.errorTrajectory = [];
+    const fingerprint = signatureFromError(errorText, sourceFiles[0] ?? null);
+    // Infer what changed since last investigation from git diff
+    let afterAction: string | null = null;
+    if (session.errorTrajectory.length > 0) {
+      try {
+        const diffStat = execSync("git diff --stat HEAD 2>/dev/null", { cwd, encoding: "utf-8", timeout: 3000 }).trim();
+        if (diffStat) {
+          const lines = diffStat.split("\n");
+          afterAction = lines[lines.length - 1]?.trim() ?? null; // summary line
+        }
+      } catch { /* no git or no changes */ }
+    }
+    session.errorTrajectory.push({
+      timestamp: new Date().toISOString(),
+      fingerprint,
+      errorType: result.error.type ?? "unknown",
+      sourceFile: sourceFiles[0] ?? null,
+      afterAction,
     });
     saveSession(cwd, session);
 
@@ -784,15 +892,23 @@ Start every debugging session with this tool.`,
     // Include past solutions if found (with staleness + causal info)
     if (pastSolutions.length > 0) {
       const fresh = pastSolutions.filter((s) => !s.staleness.stale);
-      response.pastSolutions = pastSolutions.map((s) => ({
-        problem: s.problem,
-        diagnosis: s.diagnosis?.slice(0, 300) ?? null,
-        files: s.files?.slice(0, 5) ?? [],
-        relevance: Math.round(s.relevance * 100) + "%",
-        confidence: Math.round(s.confidence * 100) + "%",
-        stale: s.staleness.stale,
-        rootCause: s.rootCause ?? undefined,
-      }));
+      response.pastSolutions = pastSolutions.map((s) => {
+        // Negative recall: check if this solution matches a failed approach in the current session
+        const failedMatch = session.failedApproaches?.find((fa) =>
+          s.diagnosis?.toLowerCase().includes(fa.toLowerCase().slice(0, 30))
+          || fa.toLowerCase().includes(s.diagnosis?.toLowerCase().slice(0, 30) ?? ""),
+        );
+        return {
+          problem: s.problem,
+          diagnosis: s.diagnosis?.slice(0, 300) ?? null,
+          files: s.files?.slice(0, 5) ?? [],
+          relevance: Math.round(s.relevance * 100) + "%",
+          confidence: Math.round(s.confidence * 100) + "%",
+          stale: s.staleness.stale,
+          rootCause: s.rootCause ?? undefined,
+          ...(failedMatch ? { warning: `Similar approach already tried this session and failed: "${failedMatch}"` } : {}),
+        };
+      });
       const topDiag = fresh.length > 0 ? fresh[0].diagnosis?.slice(0, 200) : null;
       response.nextStep = fresh.length > 0
         ? `Investigation complete — source code, git context, and runtime data included. Also found ${fresh.length} past solution(s)${topDiag ? `: "${topDiag}"` : ""}. Check if they apply.`
@@ -815,6 +931,39 @@ Start every debugging session with this tool.`,
       response.nextStep = result.error.suggestion
         ? `Suggested fix: ${result.error.suggestion}`
         : "Use debug_instrument to add logging, then debug_capture to see the output.";
+    }
+
+    // Append team recall results if any
+    if (teamResults.length > 0) {
+      const teamSolutions = teamResults
+        .filter((t) => !t.superseded)
+        .map((t) => ({
+          problem: t.entry.problem,
+          diagnosis: t.entry.diagnosis?.slice(0, 300) ?? null,
+          files: t.entry.files?.slice(0, 5) ?? [],
+          relevance: Math.round(t.relevance * 100) + "%",
+          confidence: Math.round(t.successRate * 100) + "%",
+          stale: false,
+          rootCause: t.entry.rootCause ?? undefined,
+          source: "team" as const,
+          contributedBy: t.contributedBy,
+          successRate: Math.round(t.successRate * 100) + "%",
+          failedApproachWarning: session.failedApproaches?.length
+            ? teamResults.find((tr) => tr.entry.id === t.entry.id &&
+                session.failedApproaches!.some((fa) =>
+                  t.entry.diagnosis.toLowerCase().includes(fa.toLowerCase().slice(0, 30))))
+              ? "WARNING: similar approach was already tried this session"
+              : undefined
+            : undefined,
+        }));
+      if (teamSolutions.length > 0) {
+        if (!response.pastSolutions) response.pastSolutions = [];
+        (response.pastSolutions as unknown[]).push(...teamSolutions);
+        const teamMsg = `Also found ${teamSolutions.length} team solution(s) from ${teamSolutions.map((t) => t.contributedBy).join(", ")}.`;
+        response.nextStep = typeof response.nextStep === "string"
+          ? `${response.nextStep} ${teamMsg}`
+          : teamMsg;
+      }
     }
 
     // Add fix rate hint from telemetry
@@ -847,6 +996,40 @@ Start every debugging session with this tool.`,
           ? `${liveMsg} ${response.nextStep}`
           : liveMsg;
       }
+    }
+
+    // Error trajectory analysis — detect mutation and orbiting
+    if (session.errorTrajectory && session.errorTrajectory.length > 1) {
+      const traj = session.errorTrajectory;
+      const current = traj[traj.length - 1];
+      const prev = traj[traj.length - 2];
+
+      if (current.fingerprint !== prev.fingerprint) {
+        // Error mutated — different bug now
+        const orbiting = traj.length >= 3 && traj.slice(0, -1).some((t) => t.fingerprint === current.fingerprint);
+        if (orbiting) {
+          response.errorTrajectory = {
+            status: "orbiting",
+            message: `Error is cycling back to a previously seen pattern (${current.errorType} in ${current.sourceFile}). The underlying issue may not be any of the individual errors — look for the common thread.`,
+            history: traj.map((t) => `${t.errorType}${t.sourceFile ? " in " + t.sourceFile : ""}`),
+          };
+          response.nextStep = `⚠ ORBITING: Error cycled back to a pattern seen earlier. ${typeof response.nextStep === "string" ? response.nextStep : ""}`;
+        } else {
+          response.errorTrajectory = {
+            status: "mutated",
+            message: `Error changed: was ${prev.errorType}${prev.sourceFile ? " in " + prev.sourceFile : ""}, now ${current.errorType}${current.sourceFile ? " in " + current.sourceFile : ""}. Your last change may have fixed the original bug but introduced a new one.`,
+          };
+        }
+      }
+    }
+
+    // Surface failed approaches from earlier in this session
+    if (session.failedApproaches?.length) {
+      response.failedApproaches = session.failedApproaches;
+      const failedMsg = `⚠ Previously tried (failed): ${session.failedApproaches.map((a, i) => `(${i + 1}) ${a}`).join("; ")}. Avoid repeating these.`;
+      response.nextStep = typeof response.nextStep === "string"
+        ? `${response.nextStep}\n\n${failedMsg}`
+        : failedMsg;
     }
 
     // Visual error advisory — auto-capture if Ghost OS connected, otherwise advise
@@ -949,6 +1132,21 @@ Start every debugging session with this tool.`,
         ...(buildErrors.length > 0 ? { buildErrors: buildErrors.length } : {}),
       },
     });
+
+    // Loop detection — check if we're going in circles
+    const loopAnalysis = analyzeLoop(session, cwd);
+    if (loopAnalysis.looping) {
+      response.loopDetection = {
+        severity: loopAnalysis.severity,
+        signals: loopAnalysis.signals.map((s) => ({
+          type: s.signal,
+          severity: s.severity,
+          message: s.message,
+        })),
+        recommendation: loopAnalysis.recommendation,
+      };
+      response.nextStep = `⚠ ${loopAnalysis.recommendation}\n\n${response.nextStep ?? ""}`;
+    }
 
     const budgeted = fitToBudget(response, { maxTokens: 4000 });
     return { content: [{ type: "text", text: JSON.stringify(budgeted) }] };
@@ -1212,7 +1410,7 @@ Use this before cleanup to confirm the fix actually works.`,
         }
       }
 
-      remember(cwd, {
+      const savedEntry = remember(cwd, {
         id: session.id,
         timestamp: new Date().toISOString(),
         problem: session.problem,
@@ -1221,7 +1419,35 @@ Use this before cleanup to confirm the fix actually works.`,
         diagnosis: `Auto-learned: fix verified via "${command}"`,
         files: [...filesSet],
         rootCause: null,
+        failedApproaches: session.failedApproaches,
       });
+
+      // Async push to team memory (fire-and-forget)
+      if (teamClient) {
+        teamClient.push([savedEntry]).catch(() => {});
+      }
+    }
+
+    // Close feedback loop: check if recalled memory was actually applied
+    const hadMemoryHit = session._memoryHit === true;
+    let memoryApplied = false;
+    if (hadMemoryHit && session._recalledFiles?.length && passed) {
+      // Compare recalled files to files the agent actually changed
+      const changedFiles = new Set(session.instrumentation.map((i) => basename(i.filePath)));
+      for (const cap of session.captures) {
+        const d = cap.data as Record<string, unknown> | undefined;
+        if (d?.type === "investigation") {
+          for (const f of (d.sourceFiles as string[] ?? [])) changedFiles.add(f);
+        }
+      }
+      // If any recalled file overlaps with changed files, the fix was memory-informed
+      memoryApplied = session._recalledFiles.some((f) =>
+        changedFiles.has(f) || changedFiles.has(basename(f)),
+      );
+      // Increment timesUsed on the recalled entries
+      if (memoryApplied && session._recalledEntryIds?.length) {
+        markUsed(cwd, session._recalledEntryIds);
+      }
     }
 
     // Record telemetry outcome
@@ -1239,10 +1465,24 @@ Use this before cleanup to confirm the fix actually works.`,
         outcome: passed ? "fixed" : "workaround",
         durationMs: Date.now() - new Date(session.createdAt).getTime(),
         toolsUsed: ["investigate", "instrument", "capture", "verify"],
-        memoryHit: false,
-        memoryApplied: false,
+        memoryHit: hadMemoryHit,
+        memoryApplied,
         timestamp: new Date().toISOString(),
       });
+    }
+
+    // Record failed approach on verify-fail for anti-loop memory
+    if (!passed && session.instrumentation.length > 0) {
+      if (!session.failedApproaches) session.failedApproaches = [];
+      // Build a one-liner describing what was tried from instrumented files
+      const touchedFiles = [...new Set(session.instrumentation.map((i) => basename(i.filePath)))];
+      const topError = errors[0] ? (errors[0].data as Record<string, string>)?.text?.slice(0, 80) : "verification failed";
+      const approach = `Fix in ${touchedFiles.join(", ")} — ${topError}`;
+      // Avoid duplicates
+      if (!session.failedApproaches.includes(approach)) {
+        session.failedApproaches.push(approach);
+        saveSession(cwd, session);
+      }
     }
 
     const verifyResponse: Record<string, unknown> = {
@@ -1255,6 +1495,18 @@ Use this before cleanup to confirm the fix actually works.`,
         ? "Fix verified and auto-saved to memory! Use debug_cleanup to remove instrumentation (optional — diagnosis already recorded)."
         : "Fix failed. Review the errors above and try a different approach.",
     };
+
+    // Loop detection on verify failure
+    if (!passed) {
+      const loopAnalysis = analyzeLoop(session, cwd);
+      if (loopAnalysis.looping) {
+        verifyResponse.loopDetection = {
+          severity: loopAnalysis.severity,
+          recommendation: loopAnalysis.recommendation,
+        };
+        verifyResponse.nextStep = `⚠ ${loopAnalysis.recommendation}`;
+      }
+    }
 
     // Visual verification: capture after-fix screenshot if we have a before
     if (session.visualContext?.screenshots.length && isGhostConnected() && visualConfig.captureOnVerify) {
@@ -1332,7 +1584,7 @@ Idempotent — safe to call multiple times. Files are restored to their pre-inst
         }
       }
 
-      remember(cwd, {
+      const savedEntry = remember(cwd, {
         id: session.id,
         timestamp: new Date().toISOString(),
         problem: session.problem,
@@ -1341,7 +1593,13 @@ Idempotent — safe to call multiple times. Files are restored to their pre-inst
         diagnosis,
         files: [...filesSet],
         rootCause: rc,
+        failedApproaches: session.failedApproaches,
       });
+
+      // Async push to team memory (fire-and-forget)
+      if (teamClient) {
+        teamClient.push([savedEntry]).catch(() => {});
+      }
     }
 
     maybeArchive(cwd);
@@ -1377,50 +1635,92 @@ the same error may have been solved before in this project.`,
       limit: z.number().optional().describe("Max results (default: 5)"),
       explain: z.boolean().optional().describe("Include confidence explanations for each result"),
     },
-  }, async ({ query, limit, explain }) => {
-    const matches = recall(cwd, query, limit ?? 5);
+  }, async ({ query: searchQuery, limit, explain }) => {
+    const effectiveLimit = limit ?? 5;
+    const matches = recall(cwd, searchQuery, effectiveLimit);
     const stats = memoryStats(cwd);
 
-    if (matches.length === 0) {
+    // Team recall — if local results are thin, query team memory
+    let teamMatches: TeamRecallResult[] = [];
+    if (teamClient && matches.length < effectiveLimit) {
+      const sig = signatureFromError(searchQuery, null);
+      try {
+        teamMatches = await teamClient.recall(searchQuery, {
+          errorSignature: sig,
+          limit: effectiveLimit - matches.length,
+        });
+      } catch { /* team recall failure is non-fatal */ }
+    }
+
+    if (matches.length === 0 && teamMatches.length === 0) {
       logActivity({ tool: "debug_recall", ts: Date.now(), summary: `no matches in ${stats.entries} entries` });
       return text({
         matches: [],
         memoryEntries: stats.entries,
+        teamMemoryQueried: teamClient !== null,
         message: stats.entries === 0
           ? "No debug memory yet. Complete a debug session with a diagnosis to start building memory."
-          : `No matches found in ${stats.entries} stored sessions. This is a new error.`,
+          : `No matches found in ${stats.entries} stored sessions${teamClient ? " or team memory" : ""}. This is a new error.`,
       });
     }
 
     const staleCount = matches.filter((m) => m.staleness.stale).length;
 
-    logActivity({ tool: "debug_recall", ts: Date.now(), summary: `found ${matches.length} past fix(es)`, metrics: { topConfidence: Math.round((matches[0].confidence ?? matches[0].relevance) * 100) + "%", stale: staleCount } });
+    // Format local matches
+    const formattedLocal = matches.map((m) => {
+      const entry: Record<string, unknown> = {
+        problem: m.problem,
+        errorType: m.errorType,
+        diagnosis: m.diagnosis,
+        files: m.files,
+        relevance: Math.round(m.relevance * 100) + "%",
+        date: m.timestamp,
+        stale: m.staleness.stale,
+        staleness: m.staleness.stale ? m.staleness.reason : undefined,
+        rootCause: m.rootCause ?? undefined,
+        source: "local",
+      };
+      if (explain) {
+        const ageInDays = (Date.now() - new Date(m.timestamp).getTime()) / (1000 * 60 * 60 * 24);
+        entry._explanation = explainConfidence({
+          ageInDays,
+          fileDriftCommits: m.staleness.commitsBehind,
+          timesRecalled: m.timesRecalled,
+          timesUsed: m.timesUsed,
+        });
+      }
+      return entry;
+    });
+
+    // Format team matches
+    const formattedTeam = teamMatches
+      .filter((t) => !t.superseded)
+      .map((t) => ({
+        problem: t.entry.problem,
+        errorType: t.entry.errorType,
+        diagnosis: t.entry.diagnosis,
+        files: t.entry.files,
+        relevance: Math.round(t.relevance * 100) + "%",
+        date: t.entry.timestamp,
+        stale: false,
+        rootCause: t.entry.rootCause ?? undefined,
+        source: "team" as const,
+        contributedBy: t.contributedBy,
+        successRate: Math.round(t.successRate * 100) + "%",
+      }));
+
+    const allMatches = [...formattedLocal, ...formattedTeam];
+    const topMatch = matches[0]?.diagnosis ?? teamMatches[0]?.entry.diagnosis ?? "";
+    const teamMsg = formattedTeam.length > 0
+      ? ` Also ${formattedTeam.length} team solution(s) from ${formattedTeam.map((t) => t.contributedBy).join(", ")}.`
+      : "";
+
+    logActivity({ tool: "debug_recall", ts: Date.now(), summary: `found ${allMatches.length} past fix(es)${teamMsg ? " (incl team)" : ""}`, metrics: { local: matches.length, team: formattedTeam.length, topConfidence: matches[0] ? Math.round((matches[0].confidence ?? matches[0].relevance) * 100) + "%" : undefined, stale: staleCount } });
     return text({
-      matches: matches.map((m) => {
-        const entry: Record<string, unknown> = {
-          problem: m.problem,
-          errorType: m.errorType,
-          diagnosis: m.diagnosis,
-          files: m.files,
-          relevance: Math.round(m.relevance * 100) + "%",
-          date: m.timestamp,
-          stale: m.staleness.stale,
-          staleness: m.staleness.stale ? m.staleness.reason : undefined,
-          rootCause: m.rootCause ?? undefined,
-        };
-        if (explain) {
-          const ageInDays = (Date.now() - new Date(m.timestamp).getTime()) / (1000 * 60 * 60 * 24);
-          entry._explanation = explainConfidence({
-            ageInDays,
-            fileDriftCommits: m.staleness.commitsBehind,
-            timesRecalled: m.timesRecalled,
-            timesUsed: m.timesUsed,
-          });
-        }
-        return entry;
-      }),
-      message: `Found ${matches.length} past solution(s).${staleCount > 0 ? ` ${staleCount} may be outdated (code has changed since).` : ""} Top match: "${matches[0].diagnosis}"`,
-      nextStep: staleCount === matches.length
+      matches: allMatches,
+      memoryEntries: stats.entries,
+      message: `Found ${allMatches.length} past solution(s).${staleCount > 0 ? ` ${staleCount} may be outdated.` : ""}${teamMsg} Top match: "${topMatch}"`,
+      nextStep: staleCount === matches.length && formattedTeam.length === 0
         ? "All past solutions are outdated — code has changed. Investigate fresh with debug_investigate."
         : "If a past solution applies, try the same fix. Otherwise proceed with debug_investigate.",
     });
@@ -1650,6 +1950,7 @@ Requires Chrome installed. Gracefully skips if unavailable.`,
 
       if (action === "check") {
         const integrations = listInstallable(caps);
+        const teamConfigured = teamClient !== null;
         return text({
           integrations: integrations.map((i) => ({
             id: i.id,
@@ -1661,6 +1962,21 @@ Requires Chrome installed. Gracefully skips if unavailable.`,
             manualSteps: i.manualSteps,
           })),
           ghostOsConnected: isGhostConnected(),
+          teamMemory: {
+            configured: teamConfigured,
+            status: teamConfigured ? "active" : "not configured",
+            message: teamConfigured
+              ? "Team memory is active. Debug fixes are shared with your team."
+              : "Team memory is not configured. Set STACKPACK_EVENTS_URL and STACKPACK_API_KEY to share debug knowledge across your team.",
+            setup: teamConfigured ? undefined : [
+              "1. Sign up at stackpack.io to get an API key",
+              "2. Set environment variables:",
+              "   export STACKPACK_EVENTS_URL=https://your-stackpack-instance.fly.dev",
+              "   export STACKPACK_API_KEY=sk_sp_your_api_key",
+              "3. Restart Claude Code — team memory activates automatically",
+              "4. All team members with the same org share debugging knowledge",
+            ],
+          },
           summary: {
             available: integrations.filter((i) => i.available).map((i) => i.name),
             missing: integrations.filter((i) => !i.available).map((i) => i.name),

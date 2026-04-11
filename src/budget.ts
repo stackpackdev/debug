@@ -18,7 +18,7 @@ export interface BudgetOptions {
 
 const DEFAULTS: BudgetOptions = {
   maxTokens: 4000,
-  preserveKeys: ["nextStep", "rootCause", "severity", "category", "confidence", "pastSolutions", "proactiveSuggestion", "sourceCode"],
+  preserveKeys: ["nextStep", "rootCause", "severity", "category", "confidence", "pastSolutions", "proactiveSuggestion", "sourceCode", "loopDetection", "failedApproaches", "errorTrajectory"],
   summaryDepth: 1,
 };
 

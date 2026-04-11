@@ -88,6 +88,20 @@ export interface DebugSession {
   perfSnapshots: PerfSnapshot[];
   // Performance: pre-built index from markerTag → hypothesisId
   _markerIndex: Record<string, string>;
+  // Memory feedback loop: track what was recalled and what was tried
+  _recalledEntryIds?: string[];        // IDs of memory entries recalled during investigation
+  _recalledFiles?: string[];           // files from recalled entries (for overlap detection)
+  _memoryHit?: boolean;               // whether recall found any matches
+  // Failed approaches: what didn't work (populated on verify-fail)
+  failedApproaches?: string[];
+  // Error trajectory: how the error mutated across investigations
+  errorTrajectory?: Array<{
+    timestamp: string;
+    fingerprint: string;             // normalized error signature
+    errorType: string;
+    sourceFile: string | null;
+    afterAction: string | null;      // what was changed before this investigation
+  }>;
 }
 
 // --- Constants ---
@@ -168,6 +182,12 @@ export function loadSession(cwd: string, sessionId: string): DebugSession {
       }
     }
   }
+  // Backwards compat: initialize new fields for old session files
+  if (!session.failedApproaches) session.failedApproaches = [];
+  if (!session.errorTrajectory) session.errorTrajectory = [];
+  if (!session._recalledEntryIds) session._recalledEntryIds = [];
+  if (!session._recalledFiles) session._recalledFiles = [];
+  if (session._memoryHit === undefined) session._memoryHit = false;
   return session;
 }
 

@@ -15,6 +15,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statS
 import { dirname, join, resolve } from "node:path";
 import { computeConfidence, ARCHIVE_THRESHOLD } from "./confidence.js";
 import { memoryPath, walPath, archiveDirPath, atomicWrite, tokenize } from "./utils.js";
+import { signatureFromError } from "./signature.js";
 
 // ━━━ Inverted Index Cache ━━━
 
@@ -82,7 +83,7 @@ function removeFromIndex(cwd: string, entryId: string): void {
 // ━━━ Write-Ahead Log ━━━
 
 interface WalMutation {
-  op: "increment_recalled" | "remember" | "archive" | "update";
+  op: "increment_recalled" | "increment_used" | "remember" | "archive" | "update";
   entryId: string;
   data?: Record<string, unknown>;
   ts: string;
@@ -123,6 +124,9 @@ function replayWal(store: MemoryStore, mutations: WalMutation[]): void {
     switch (m.op) {
       case "increment_recalled":
         if (entry) entry.timesRecalled = (entry.timesRecalled ?? 0) + 1;
+        break;
+      case "increment_used":
+        if (entry) entry.timesUsed = (entry.timesUsed ?? 0) + 1;
         break;
       case "archive":
         if (entry) entry.archived = true;
@@ -176,8 +180,12 @@ export interface MemoryEntry {
   keywords: string[];
   // Temporal: track when this diagnosis was valid
   gitSha: string | null;
+  // Normalized error signature for cross-session and team deduplication
+  errorSignature?: string;
   // Causal chain: what caused the error and what fixed it
   rootCause: CausalLink | null;
+  // What didn't work — populated from session.failedApproaches on cleanup
+  failedApproaches?: string[];
   timesRecalled: number;
   timesUsed: number;
   archived: boolean;
@@ -502,8 +510,9 @@ export function saveStore(cwd: string, store: MemoryStore): void {
  */
 export function remember(
   cwd: string,
-  entry: Omit<MemoryEntry, "keywords" | "gitSha" | "rootCause" | "timesRecalled" | "timesUsed" | "archived" | "source"> & {
+  entry: Omit<MemoryEntry, "keywords" | "gitSha" | "errorSignature" | "rootCause" | "timesRecalled" | "timesUsed" | "archived" | "source"> & {
     rootCause?: CausalLink | null;
+    failedApproaches?: string[];
     source?: "local" | "external";
   },
 ): MemoryEntry {
@@ -517,10 +526,14 @@ export function remember(
   ].join(" ");
   const keywords = [...new Set(tokenize(allText))];
 
+  // Compute normalized error signature for cross-session deduplication
+  const errorSignature = signatureFromError(entry.problem, entry.files[0] ?? null);
+
   const full: MemoryEntry = {
     ...entry,
     keywords,
     gitSha: getGitSha(cwd),
+    errorSignature,
     rootCause: entry.rootCause ?? null,
     timesRecalled: 0,
     timesUsed: 0,
@@ -540,6 +553,25 @@ export function remember(
 }
 
 /**
+ * Mark memory entries as "used" — the recalled fix was actually applied.
+ * Closes the feedback loop: timesUsed feeds into confidence scoring.
+ */
+export function markUsed(cwd: string, entryIds: string[]): void {
+  const store = loadStore(cwd);
+  for (const id of entryIds) {
+    const entry = store.entries.find((e) => e.id === id);
+    if (entry) {
+      entry.timesUsed = (entry.timesUsed ?? 0) + 1;
+      appendWal(cwd, {
+        op: "increment_used",
+        entryId: id,
+        ts: new Date().toISOString(),
+      });
+    }
+  }
+}
+
+/**
  * Search past debug sessions for similar errors.
  * Returns matches ranked by confidence * relevance, with staleness info and causal chains.
  */
@@ -553,6 +585,9 @@ export function recall(
 
   const queryTokens = tokenize(query);
   if (queryTokens.length === 0) return [];
+
+  // Compute query signature for direct matching (primary key)
+  const querySig = signatureFromError(query, null);
 
   const now = Date.now();
   const index = getIndex(cwd, store);
@@ -570,6 +605,13 @@ export function recall(
     }
   }
 
+  // Also include signature matches that keyword search may have missed
+  for (const e of store.entries) {
+    if (!e.archived && e.errorSignature === querySig && !hitCounts.has(e.id)) {
+      hitCounts.set(e.id, queryTokens.length); // full relevance for signature match
+    }
+  }
+
   // Build a lookup map for quick entry access
   const entryById = new Map<string, MemoryEntry>();
   for (const e of store.entries) {
@@ -580,7 +622,9 @@ export function recall(
   for (const [id, hits] of hitCounts) {
     const entry = entryById.get(id);
     if (!entry || entry.archived) continue;
-    const relevance = hits / queryTokens.length;
+    // Signature match gets a 2x relevance boost
+    const sigBoost = entry.errorSignature === querySig ? 2.0 : 1.0;
+    const relevance = (hits / queryTokens.length) * sigBoost;
     const staleness = checkStaleness(cwd, entry);
     const ageInDays = (now - new Date(entry.timestamp).getTime()) / (1000 * 60 * 60 * 24);
     const confidence = computeConfidence({
