@@ -1,277 +1,333 @@
 # Closed Agent Integration Guide
 
-How to use stackpack-debug with AI coding platforms you don't control — Lovable, Bolt, Replit, Base44, and others.
+Stop AI coding agents from burning your credits in loops. stackpack-debug watches your app from outside the agent's sandbox, detects when the agent is stuck, and suggests fixes from a community of developers who already solved your exact error.
 
-## The Problem
-
-AI coding agents in closed platforms loop. They hit an error, try a fix, introduce a new error, try another fix, reintroduce the original error. Each iteration burns tokens and time. The user watches helplessly because they can't inject debugging tools into the platform's sandbox.
-
-stackpack-debug sits outside the sandbox. It watches the app's output — the errors, the console, the network failures — and detects loops the agent can't see. When a known fix exists (from your past sessions or your team's shared memory), it surfaces it immediately.
+Works with Lovable, Bolt.new, Replit, Base44, and any browser-based AI coding tool.
 
 ## How It Works
 
 ```
-                  Closed Agent Platform
-                  ┌─────────────────────────────┐
-  User's          │  Agent edits code            │
-  Browser    ───► │  Preview renders in iframe   │
-                  │  Errors appear in console    │
-                  └──────────┬──────────────────┘
-                             │ errors flow to browser
-                             ▼
-                  ┌─────────────────────────────┐
-                  │  stackpack-debug observer    │
-                  │  (browser extension or       │
-                  │   console script)            │
-                  │                              │
-                  │  Captures: errors, network   │
-                  │  failures, console output    │
-                  └──────────┬──────────────────┘
-                             │ sends to local server
-                             ▼
-                  ┌─────────────────────────────┐
-                  │  spdg watch (local)          │
-                  │                              │
-                  │  Loop detection              │
-                  │  Memory recall               │  ──► Desktop notification
-                  │  Health trend                │  ──► Terminal dashboard
-                  │  Team knowledge              │  ──► Browser dashboard
-                  └─────────────────────────────┘
+  You on Lovable/Bolt/Replit          Your machine
+  ┌──────────────────────────┐        ┌──────────────────────────────┐
+  │  Agent edits code         │        │  stackpack-debug-helper      │
+  │  Preview renders          │        │                              │
+  │  Chat streams responses   │        │  Watches:                    │
+  │                           │   ──►  │  • App errors (console/DOM)  │
+  │  [browser capture script] │        │  • Agent chat output         │
+  │  observes everything      │        │  • Error patterns over time  │
+  │                           │        │                              │
+  └──────────────────────────┘        │  Detects:                    │
+                                       │  • Loops (same error 4x)     │
+                                       │  • Orbiting (A→B→A cycles)   │
+                                       │  • Degradation (more errors) │
+                                       │                              │
+                                       │  Suggests:                   │
+                                       │  • Known fix from community  │
+                                       │  • Prompt to paste into chat │
+                                       └──────────────────────────────┘
 ```
 
-The user doesn't need to install anything inside Lovable/Bolt/Replit. The observation happens from the user's own browser and local machine.
+The capture script runs in your browser alongside the agent. It watches:
+- **App errors** — JavaScript errors, network failures, console output from the preview
+- **Agent responses** — the text the agent streams into the chat (via DOM observation)
+- **Code changes** — what the agent writes into the editor (via DOM observation)
 
-## Quick Start (2 minutes)
+When it detects a loop, it sends you a fix suggestion you can paste directly into the agent's chat.
 
-### Step 1: Install stackpack-debug
+## Quick Start
+
+### One command to install
 
 ```bash
-npm install -g stackpack-debug
+npx stackpack-debug setup --agent
 ```
 
-### Step 2: Run the setup wizard
+The wizard asks:
+1. **Which platform?** (Lovable / Bolt / Replit / Base44 / Other)
+2. **Free or Pro?** (local memory only vs community database)
+3. Generates your browser capture script
+4. Starts the background helper
+5. Copies the script to your clipboard
 
-```bash
-spdg setup --agent
-```
+### Paste one script in your browser
 
-The wizard:
-1. Asks which agent platform you use (Lovable / Bolt / Replit / Base44 / Other)
-2. Generates the correct browser script for that platform
-3. Starts the local capture server
-4. Opens the dashboard in your browser
-5. Shows you where to paste the script
+Open your project in Lovable/Bolt/Replit. Open the browser console (Cmd+Option+J). Paste. Done.
 
-### Step 3: Paste one script in your browser console
+The script:
+- Captures all JavaScript errors from the app preview
+- Watches the agent's chat output as it streams (via MutationObserver on the chat container)
+- Watches the code editor for changes
+- Sends everything to `localhost` — nothing leaves your machine unless you opt into team/community features
 
-When you're on the agent's page with your project open, open the browser DevTools console (Cmd+Option+J on Mac) and paste the script the wizard gave you. The script:
+### Work normally
 
-- Captures all JavaScript errors from the preview
-- Captures unhandled promise rejections
-- Captures failed network requests
-- Sends everything to the local stackpack-debug server (localhost only — nothing leaves your machine)
+The `stackpack-debug-helper` process runs in the background. You don't need to think about it. When it detects a problem:
 
-### Step 4: Work normally
+- **Desktop notification** pops up with the error and suggested fix
+- **If you have the dashboard open** (localhost:3100), it shows the full loop analysis
+- **The suggested fix is a ready-to-paste prompt** for the agent's chat input
 
-Use Lovable/Bolt/Replit as you normally would. stackpack-debug watches in the background. When it detects a loop, you get:
+## What Gets Captured
 
-- A desktop notification (macOS/Windows)
-- A terminal alert with the specific error and a suggested fix
-- If a team member solved this before: their exact fix, surfaced automatically
+### From the app preview
 
-## Platform-Specific Setup
+| Signal | How | What you get |
+|--------|-----|-------------|
+| JavaScript errors | `window.addEventListener('error')` | Stack traces, error types, source files |
+| Promise rejections | `unhandledrejection` event | Async failures with context |
+| Console errors | Wrapped `console.error/warn` | Everything the agent's code logs |
+| Network failures | Wrapped `fetch` + `XMLHttpRequest` | Failed API calls with status codes |
+| Performance | `PerformanceObserver` | Long tasks, slow renders |
+
+### From the agent's chat
+
+The capture script uses `MutationObserver` on the chat message container. As the agent streams its response, the observer captures the text in real-time. This gives us:
+
+| Signal | What it tells us |
+|--------|-----------------|
+| Error analysis text | What the agent thinks the error is |
+| Code blocks in responses | What fix the agent is attempting |
+| "Fixed!" claims | Whether the agent thinks it succeeded |
+| Repeated phrases | "Let me try a different approach" appearing 3+ times = loop |
+
+The agent's chat output is the richest signal. When the agent says "I see a TypeError in auth.ts" and then two messages later says "I see a TypeError in auth.ts" with different fix code, we know it's looping before the third attempt even starts.
+
+### From the code editor
+
+The capture script watches for changes in the editor DOM (Monaco, CodeMirror, or contenteditable). This gives us:
+
+| Signal | What it tells us |
+|--------|-----------------|
+| Which file is being edited | Tracks file churn |
+| Code diffs | Whether the same lines are being changed back and forth |
+| Edit frequency | Rapid edits = agent trying variations |
+
+## Platform Details
 
 ### Lovable
 
-Lovable renders the preview in an iframe. The capture script targets the iframe's content window.
+**Preview:** Iframe-based. The capture script injects into the preview iframe via `contentWindow` access.
 
-**How it works:**
-- Lovable's preview iframe is accessible because it runs on a subdomain the page controls
-- The script finds the preview iframe, injects error listeners, and forwards events to localhost
-- It also monitors the Lovable UI for agent status changes (thinking, editing, error)
+**Chat:** React-rendered message container. MutationObserver watches for new message nodes with `childList: true, subtree: true, characterData: true`. Text is captured via `.textContent` as it streams.
 
-**Script location:** Paste in the browser console while on your Lovable project page.
+**Editor:** Lovable uses a custom code viewer. File contents are readable from the DOM when the code tab is active.
 
-**What's captured:**
-- Preview app errors (TypeError, ReferenceError, etc.)
-- Preview app network failures (failed API calls, CORS errors)
-- Build/compilation errors (shown in Lovable's error panel)
-- Agent action indicators (which files the agent is editing)
-
-**Limitations:**
-- Cannot capture the agent's internal reasoning or tool calls
-- Cannot capture server-side errors (only client-side)
-- Script needs to be re-pasted after a full page reload
+**Script persistence:** The script stays active until you close the browser tab or do a full page reload. For Lovable's SPA navigation (switching between design/code/preview tabs), the script survives. The MutationObserver re-attaches to new iframes automatically.
 
 ### Bolt.new
 
-Bolt runs WebContainers — a full Node.js environment in the browser. This gives the richest observability.
+**Preview:** WebContainer-based iframe. Full access because everything runs in-browser.
 
-**How it works:**
-- Bolt's terminal output is visible in the page DOM
-- The preview runs in an iframe but is accessible
-- Build errors appear in the terminal and can be scraped
-- The script observes both the terminal output and the preview iframe
+**Chat:** Uses React components with identifiable class names (`bg-bolt-elements-*`). Open source — class names are stable and documented.
 
-**What's captured:**
-- Terminal output (npm install, build errors, server logs)
-- Preview app errors
-- Network failures
-- File system changes (visible in the file tree)
+**Terminal:** Bolt exposes a terminal panel with xterm.js. The capture script scrapes terminal output for errors. This catches build errors, npm install failures, and server-side logs that don't appear in the browser console.
 
-**Limitations:**
-- WebContainer performance overhead may affect capture timing
-- Terminal scraping depends on DOM structure (may break on Bolt UI updates)
+**Editor:** CodeMirror 6. The editor instance is accessible from the DOM. File changes can be observed via CodeMirror's update listener.
 
 ### Replit
 
-Replit runs code in a Linux container with a built-in DevTools implementation.
+**Preview:** Native webview with built-in DevTools (chobitsu). The capture script hooks into the same mechanism.
 
-**How it works:**
-- Replit's preview is a webview with same-origin access
-- The DevTools use chobitsu (JS implementation of Chrome DevTools protocol)
-- The script hooks into the existing DevTools infrastructure
+**Chat:** Standard chat interface with agent message containers.
 
-**What's captured:**
-- Console output (all levels)
-- Runtime errors
-- Network requests (via DevTools protocol)
-- Performance metrics
+**Terminal:** xterm.js panel. Same scraping approach as Bolt.
 
-**Limitations:**
-- Replit's DevTools may conflict with the capture script
-- Container restarts reset the capture state
+**Editor:** Monaco Editor. Accessible via `window.monaco` or by traversing the DOM.
 
 ### Base44
 
-Base44 generates full-stack apps with a remote backend.
+**Preview:** Standard iframe.
 
-**How it works:**
-- Frontend preview is observable from the browser
-- Backend errors are NOT directly observable (they run on Base44's servers)
-- The script captures frontend errors and failed API calls
+**Chat:** Standard message container.
 
-**What's captured:**
-- Frontend JavaScript errors
-- Failed API calls to the Base44 backend (with status codes)
-- Client-side rendering issues
+**Limitation:** Backend runs on Base44's servers — server-side errors are not observable. Only client-side errors and failed API calls are captured.
 
-**Limitations:**
-- No visibility into server-side errors
-- Backend logic bugs are invisible to the capture script
+## Loop Detection
 
-### Other / Custom
+### Same error persisting
 
-For any platform with a browser-based preview:
+The error signature (normalized hash of error type + file) appears in 4+ consecutive checks over 20+ seconds. The agent's fixes aren't reaching the error.
+
+**Notification:**
+```
+🔴 LOOP: TypeError in auth.ts persisting across 5 checks
+   The current approach isn't working.
+   
+   💾 Community fix (94% success rate, 312 developers):
+   "Add null check before .map() — API returns null when session expires"
+   
+   📋 Paste this into the agent's chat:
+   "Stop. The error is caused by the API returning null when the session
+   expires. Add a null check before the .map() call in auth.ts:
+   const users = data?.users ?? []; then use users.map(...)"
+```
+
+### Error orbiting
+
+Error A appears → agent fixes it → Error B appears → agent fixes it → Error A returns. The agent is cycling.
+
+**Notification:**
+```
+🔴 ORBITING: Cycling between TypeError in auth.ts and ImportError in user.ts
+   These errors are connected. The fix for one introduces the other.
+   
+   📋 Paste this into the agent's chat:
+   "You're cycling between two errors. Both are caused by the same issue:
+   the auth module export changed from default to named. Fix the import
+   in user.ts AND the null check in auth.ts in the same edit."
+```
+
+### Agent repeating itself
+
+The chat observer detects the agent saying similar things across messages — "Let me try a different approach," "I see the issue now," "Let me fix that."
+
+**Notification:**
+```
+⚠️ AGENT REPEATING: 3 similar "fixing" messages without resolution
+   The agent may be stuck. Consider providing more specific context.
+   
+   📋 Paste this into the agent's chat:
+   "The error is [specific error from capture]. It's been appearing for
+   the last 3 attempts. The root cause is [diagnosis from community DB].
+   Apply this specific fix: [code from community DB]"
+```
+
+## The Community Database
+
+### Why it matters
+
+AI-generated code has predictable bug patterns. Research shows:
+
+- **Misinterpretations** (21%) — code deviates from intended behavior
+- **Missing corner cases** (15%) — works for happy path, fails on edge cases  
+- **Hallucinated functions** — calling APIs that don't exist
+- **Missing null checks** — the #1 runtime error in AI-generated React apps
+- **Incomplete generation** — code cuts off, missing closing tags/brackets
+
+When 500 Lovable users hit the same hydration mismatch error, the first user who solves it contributes the fix. Users 2-500 get it instantly.
+
+### How it works
+
+**Your errors are fingerprinted, not shared raw.** The error signature is a 16-character hash of `(error_type + source_file_pattern + top_stack_frame)`. Your actual code, file paths, and error messages never leave your machine.
+
+What IS shared (on Pro plan):
+- The error signature hash
+- The fix description (one-liner you wrote or the agent wrote)
+- Whether the fix actually worked (success/failure tracking)
+- The causal chain (what caused it, where it manifested, where the real bug was)
+
+What is NOT shared:
+- Your source code
+- Your file contents
+- Your error messages
+- Your project name or structure
+- Anything from the agent's chat
+
+### Free vs Pro
+
+| Feature | Free | Pro |
+|---------|------|-----|
+| Loop detection | Yes | Yes |
+| Agent chat observation | Yes | Yes |
+| Desktop notifications | Yes | Yes |
+| Local memory (your fixes) | 200 entries | Unlimited |
+| Team sharing (your org) | No | Yes |
+| Community database | No | Yes — thousands of verified fixes |
+| Fix success rates | No | Yes — "94% of developers fixed this with..." |
+| Ready-to-paste prompts | Basic | AI-generated, context-aware |
+| Background daemon | Yes | Yes |
+
+**Why Pro is worth it:** Each loop prevented saves $0.50-2.00 in tokens. The community database prevents 5-10 loops per day for an active developer. The subscription pays for itself in the first week.
+
+## Architecture: The Fix Suggestion Agent
+
+When you're on Pro, fix suggestions aren't just recalled from a database — they're generated by a specialized agent running on StackPack's infrastructure.
+
+```
+Your browser                    StackPack Cloud (Fly.io)
+┌─────────────────┐             ┌──────────────────────────────┐
+│ Capture script   │   error    │  Fix Suggestion Agent         │
+│ detects loop     │ ────────►  │                              │
+│                  │            │  1. Match error signature     │
+│                  │   prompt   │  2. Find community fixes      │
+│ Paste into chat  │ ◄────────  │  3. Check success rates       │
+│                  │            │  4. Generate context-aware     │
+└─────────────────┘             │     prompt for THIS agent     │
+                                │  5. Adapt to platform          │
+                                │     (Lovable vs Bolt vs ...)  │
+                                └──────────────────────────────┘
+```
+
+The agent knows:
+- **Common AI-generated code bugs** — trained on the 10 categories from academic research
+- **Platform-specific patterns** — Lovable generates different code than Bolt
+- **What works** — ranked by actual success rates from the community
+- **How to prompt each platform's agent** — the fix suggestion is formatted as a prompt optimized for the specific platform's agent
+
+This is NOT a generic LLM call. It's a specialized agent that only does one thing: generate the most effective prompt to unstick the agent that's looping. It runs on Fly.io, costs fractions of a cent per call, and its knowledge grows with every error captured by every stackpack-debug user.
+
+## Setup Reference
+
+### Environment Variables
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `STACKPACK_API_KEY` | For Pro | API key from stackpack.io |
+| `STACKPACK_EVENTS_URL` | For Pro | Platform URL (auto-detected) |
+
+### CLI Commands
 
 ```bash
-spdg setup --agent --platform custom
+spdg setup --agent          # Interactive wizard for closed agent setup
+spdg watch                  # Start standalone watcher + capture server
+spdg watch --daemon         # Run as background process
+spdg watch --stop           # Stop the background process
+spdg setup --agent --reset  # Regenerate capture script
+spdg doctor                 # Check all integrations and connectivity
 ```
 
-The wizard generates a generic capture script that:
-- Hooks `window.onerror` and `unhandledrejection`
-- Wraps `fetch` and `XMLHttpRequest`
-- Sends events to `localhost:3100` (configurable)
-- Works on any page where you can open the browser console
+### Process Names
 
-## What the Watcher Detects
+The background process appears as `stackpack-debug-helper` in Activity Monitor / Task Manager. This is intentional — it should be obvious what it is when you see it running.
 
-### Loop Detection
-
-**Same error persisting:** The same error signature appears in 4+ consecutive checks (20+ seconds). The agent is stuck — its fixes aren't reaching the error.
-
-**Error orbiting:** Error A appears → agent fixes it → Error B appears → agent fixes it → Error A returns. The agent is cycling between two states without resolving the underlying issue.
-
-**Degrading health:** Error count is rising over time. The agent's changes are making things worse, not better.
-
-### Automatic Recall
-
-When a loop is detected, the watcher checks your local memory AND the team pool for known fixes:
-
-- **Local memory:** Past sessions where you (or this project) solved the same error signature
-- **Team memory:** Fixes from teammates in your organization who solved the same error
-
-If a fix exists, it appears in the notification:
+### Files
 
 ```
-🔴 LOOP: Same error persisting across 5 checks: TypeError: Cannot read properties of undefined (reading 'map')
-   This error isn't being fixed by the current approach. Try a different strategy.
+~/.stackpack-debug/              # Global config (not per-project)
+  config.json                    # Platform choice, API key reference
+  watcher.log                    # Background process log
+  captures/                      # Recent capture events (rolling buffer)
 
-💾 Known fix: Add null check before .map() — the API returns null when unauthenticated
-   (from @alice, 95% success rate across 12 applications)
+<project>/.debug/                # Per-project (gitignored)
+  memory.json                    # Local fix memory
+  live-context.json              # Live error state
+  capture-lovable.js             # Generated browser script
 ```
-
-The user copies this fix and pastes it into the agent's chat. One more iteration instead of ten.
-
-## Running in the Background
-
-### Option A: Persistent Terminal (recommended)
-
-Keep `spdg watch` running in a terminal tab. It uses <1% CPU and ~20MB RAM. Terminal stays open as long as you're working.
-
-### Option B: Background Process
-
-```bash
-spdg watch --daemon
-```
-
-Runs in the background. Logs to `~/.stackpack-debug/watcher.log`. Desktop notifications still work. Stop with `spdg watch --stop`.
-
-### Option C: Login Item (macOS)
-
-```bash
-spdg watch --autostart
-```
-
-Adds stackpack-debug to your macOS Login Items. Starts automatically on boot. Watches any project where `.debug/` exists.
-
-## Community Database vs Personal Memory
-
-### Free Plan: Personal Memory
-
-- Your own debugging history (200 entries, local storage)
-- Loop detection works fully
-- Error signature matching across your own sessions
-- No team sharing, no community database
-
-### Pro Plan: Team + Community Memory
-
-- Everything in Free, plus:
-- **Team pool:** Share fixes across your organization. When any team member solves a bug, everyone benefits.
-- **Community database:** Anonymized error signatures and fix patterns from all stackpack-debug users. When 500 React developers solve the same hydration mismatch, the 501st gets the fix instantly.
-- **Success rate tracking:** Fixes are ranked by how often they actually work (not just keyword matching)
-- **Signature deduplication:** The same bug reported by 100 users produces one canonical fix, not 100 duplicate entries
-
-**Why pay?** Building your own personal database of 200 fixes takes months of debugging. The community database has thousands of verified fixes on day one. The difference between "I've seen this before" and "500 developers have seen this and here's what works" is the difference between a 50% chance of a useful recall and a 95% chance.
-
-## Privacy
-
-- **Capture scripts run locally.** Error data goes to `localhost` only. Nothing is sent to any server without the team memory feature enabled.
-- **Team memory is opt-in.** Only enabled when `STACKPACK_API_KEY` is set.
-- **Community database uses anonymized signatures.** Error type + file pattern are hashed. Your code, file names, and error messages are never shared. Only the 16-character signature hash and the fix description are contributed.
-- **You control what's pushed.** Only fixes you verify (via `debug_verify`) are ever synced. Failed attempts, captured console output, and raw error messages stay local.
 
 ## Troubleshooting
 
-### Script doesn't capture errors
+### "Script doesn't capture anything"
 
-1. Check that the preview iframe is loaded before pasting the script
-2. Some platforms use CSP headers that block inline scripts — try the browser extension instead
-3. Verify the local server is running: `curl http://localhost:3100/health`
+1. Make sure the preview iframe is loaded before pasting
+2. Check the console for `[stackpack-debug] Capture active` message
+3. Verify the local server: `curl http://localhost:3100/health`
+4. Some platforms use strict CSP — try the browser extension if console injection fails
 
-### Desktop notifications not appearing
+### "No community fixes appearing"
 
-- macOS: System Settings → Notifications → Terminal (or your terminal app) → Allow
-- The watcher only sends desktop notifications for critical alerts (orbiting, 5+ loop iterations)
+1. Verify Pro plan: `spdg doctor` should show "Community: connected"
+2. The community database grows over time — not every error has a known fix yet
+3. Check if the error is too project-specific (custom API errors won't match community patterns)
 
-### Memory recall returns nothing
+### "Desktop notifications not showing"
 
-- First session? Memory is empty. Fixes accumulate as you debug.
-- Team memory not configured? Run `spdg setup --team` to connect to your organization.
-- Community database requires Pro plan.
+- macOS: System Settings → Notifications → stackpack-debug-helper → Allow
+- Windows: Settings → Notifications → stackpack-debug-helper → On
+- Linux: Ensure `notify-send` is installed
 
-### Agent-specific issues
+### "The agent ignored my pasted fix"
 
-- **Lovable:** If the preview reloads completely, re-paste the script
-- **Bolt:** Terminal scraping may lag behind — errors in the terminal appear 1-2 seconds after they happen
-- **Replit:** If DevTools are open, close them before pasting (conflicts with chobitsu)
+- Try being more specific: include the exact file name and line number
+- Prefix with "IMPORTANT:" or "Stop and read this carefully:"
+- Some agents respond better to "The error is X, the fix is Y" than long explanations
+- If the agent keeps ignoring the fix, the underlying architecture may be different from what the community fix assumes — investigate manually

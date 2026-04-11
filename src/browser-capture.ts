@@ -19,6 +19,8 @@ interface PlatformConfig {
   urlPattern: RegExp;
   previewSelector: string;        // CSS selector for the preview iframe
   terminalSelector: string | null; // CSS selector for terminal output (if available)
+  chatSelector: string | null;     // CSS selector for the agent chat container
+  editorSelector: string | null;   // CSS selector for the code editor
   description: string;
 }
 
@@ -28,6 +30,8 @@ const PLATFORMS: Record<AgentPlatform, PlatformConfig> = {
     urlPattern: /lovable\.dev/,
     previewSelector: 'iframe[title*="preview" i], iframe[src*="webcontainer"], iframe[class*="preview"]',
     terminalSelector: null,
+    chatSelector: '[class*="message"], [role="article"], [class*="chat"] [class*="content"], [class*="response"]',
+    editorSelector: '[class*="editor"], [class*="code-viewer"], [class*="CodeMirror"], .monaco-editor',
     description: "Lovable.dev AI app builder",
   },
   bolt: {
@@ -35,6 +39,8 @@ const PLATFORMS: Record<AgentPlatform, PlatformConfig> = {
     urlPattern: /bolt\.new|stackblitz\.com/,
     previewSelector: 'iframe[title*="preview" i], iframe.result-iframe, iframe[src*="webcontainer"]',
     terminalSelector: '[class*="terminal"], [class*="xterm"]',
+    chatSelector: '[class*="bolt-elements"], [class*="message"], [class*="chat-message"]',
+    editorSelector: '.cm-editor, [class*="CodeMirror"], .monaco-editor',
     description: "Bolt.new / StackBlitz WebContainer",
   },
   replit: {
@@ -42,6 +48,8 @@ const PLATFORMS: Record<AgentPlatform, PlatformConfig> = {
     urlPattern: /replit\.com/,
     previewSelector: 'iframe[title*="webview" i], iframe[title*="output" i], iframe.output-iframe',
     terminalSelector: '[class*="terminal"], [class*="xterm"]',
+    chatSelector: '[class*="message"], [class*="agent-message"], [class*="chat"]',
+    editorSelector: '.monaco-editor, [class*="editor-container"]',
     description: "Replit Agent",
   },
   base44: {
@@ -49,6 +57,8 @@ const PLATFORMS: Record<AgentPlatform, PlatformConfig> = {
     urlPattern: /base44\.com/,
     previewSelector: 'iframe[title*="preview" i], iframe[class*="preview"]',
     terminalSelector: null,
+    chatSelector: '[class*="message"], [class*="chat"]',
+    editorSelector: null,
     description: "Base44 AI app builder",
   },
   custom: {
@@ -56,6 +66,8 @@ const PLATFORMS: Record<AgentPlatform, PlatformConfig> = {
     urlPattern: /.*/,
     previewSelector: "iframe",
     terminalSelector: null,
+    chatSelector: '[class*="message"], [role="article"], [class*="chat"]',
+    editorSelector: '.monaco-editor, .cm-editor, [class*="CodeMirror"]',
     description: "Generic browser-based preview",
   },
 };
@@ -198,6 +210,82 @@ export function generateCaptureScript(
 
       // Re-inject periodically (handles iframe navigation that MutationObserver misses)
       setInterval(findAndInject, 3000);
+
+      ${config.chatSelector ? `
+      // Chat observation — watch agent responses as they stream
+      var CHAT_SELECTOR = '${config.chatSelector}';
+      var lastMsgCount = 0;
+      var lastMsgText = '';
+      var chatObserver = new MutationObserver(function() {
+        var msgs = document.querySelectorAll(CHAT_SELECTOR);
+        if (msgs.length === lastMsgCount) {
+          // Check if the last message text changed (streaming)
+          var last = msgs[msgs.length - 1];
+          if (last) {
+            var text = (last.textContent || '').trim();
+            if (text !== lastMsgText && text.length > lastMsgText.length) {
+              lastMsgText = text;
+              // Only send when we have a meaningful chunk (debounce streaming)
+              if (text.length % 200 < 10) {
+                try {
+                  var ws = new WebSocket('ws://localhost:${wsPort}/__spdg/ws');
+                  ws.onopen = function() {
+                    ws.send(JSON.stringify({
+                      type: 'agent_chat', text: text.slice(-500),
+                      msgIndex: msgs.length - 1, ts: Date.now(), source: 'chat'
+                    }));
+                    ws.close();
+                  };
+                } catch(e) {}
+              }
+            }
+          }
+          return;
+        }
+        lastMsgCount = msgs.length;
+        var newest = msgs[msgs.length - 1];
+        if (!newest) return;
+        lastMsgText = (newest.textContent || '').trim();
+        try {
+          var ws = new WebSocket('ws://localhost:${wsPort}/__spdg/ws');
+          ws.onopen = function() {
+            ws.send(JSON.stringify({
+              type: 'agent_message', text: lastMsgText.slice(0, 1000),
+              msgIndex: msgs.length - 1, ts: Date.now(), source: 'chat'
+            }));
+            ws.close();
+          };
+        } catch(e) {}
+      });
+      var chatRoot = document.body;
+      chatObserver.observe(chatRoot, { childList: true, subtree: true, characterData: true, characterDataOldValue: true });
+      ` : ""}
+
+      ${config.editorSelector ? `
+      // Editor observation — detect file changes
+      var EDITOR_SELECTOR = '${config.editorSelector}';
+      var lastEditorContent = '';
+      setInterval(function() {
+        var editor = document.querySelector(EDITOR_SELECTOR);
+        if (!editor) return;
+        var content = (editor.textContent || '').slice(0, 2000);
+        if (content === lastEditorContent) return;
+        var changed = content !== lastEditorContent;
+        lastEditorContent = content;
+        if (changed) {
+          try {
+            var ws = new WebSocket('ws://localhost:${wsPort}/__spdg/ws');
+            ws.onopen = function() {
+              ws.send(JSON.stringify({
+                type: 'editor_change', length: content.length,
+                preview: content.slice(0, 200), ts: Date.now(), source: 'editor'
+              }));
+              ws.close();
+            };
+          } catch(e) {}
+        }
+      }, 3000);
+      ` : ""}
 
       ${config.terminalSelector ? `
       // Terminal scraping (${config.name}-specific)

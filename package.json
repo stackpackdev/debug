@@ -5,6 +5,7 @@
   "type": "module",
   "bin": {
     "stackpack-debug": "./dist/index.js",
+    "stackpack-debug-helper": "./dist/index.js",
     "spdg": "./dist/index.js"
   },
   "scripts": {
