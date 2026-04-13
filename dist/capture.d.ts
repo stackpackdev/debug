@@ -10,6 +10,17 @@ export interface BuildError {
     raw: string;
 }
 export declare function parseBuildError(text: string): BuildError | null;
+export interface RuntimeError {
+    type: "unhandled-rejection" | "uncaught-exception" | "stack-trace" | "connection-error" | "server-error" | "console-error";
+    message: string;
+    file: string | null;
+    line: number | null;
+    stack: string | null;
+    raw: string;
+}
+export declare function parseRuntimeError(text: string): RuntimeError | null;
+/** Feed stderr lines to the runtime error parser. Call per-chunk (may be multiline). */
+export declare function feedRuntimeError(text: string): void;
 declare class RingBuffer<T> {
     private buf;
     private head;
@@ -25,6 +36,7 @@ declare class RingBuffer<T> {
 export declare const terminalBuffer: RingBuffer<Capture>;
 export declare const browserBuffer: RingBuffer<Capture>;
 export declare const buildBuffer: RingBuffer<BuildError>;
+export declare const runtimeBuffer: RingBuffer<RuntimeError>;
 /** Read recent terminal output from the immutable window (never drained). */
 export declare function peekRecentWindow(lastMs?: number): Capture[];
 /**
@@ -35,14 +47,17 @@ export declare function peekRecentOutput(opts?: {
     terminalLines?: number;
     browserLines?: number;
     buildErrors?: number;
+    runtimeErrors?: number;
 }): {
     terminal: Capture[];
     browser: Capture[];
     buildErrors: BuildError[];
+    runtimeErrors: RuntimeError[];
     counts: {
         terminal: number;
         browser: number;
         buildErrors: number;
+        runtimeErrors: number;
     };
 };
 /**
@@ -62,6 +77,7 @@ export declare function waitForNewOutput(opts?: {
  * Drain all accumulated build errors from the buffer.
  */
 export declare function drainBuildErrors(): BuildError[];
+export declare function drainRuntimeErrors(): RuntimeError[];
 export interface TrackedProcess {
     pid: number;
     command: string;
@@ -133,12 +149,33 @@ export interface LiveContext {
         code: string | null;
         message: string;
     }>;
+    runtimeErrors: Array<{
+        type: string;
+        message: string;
+        file: string | null;
+        line: number | null;
+        stack: string | null;
+    }>;
+    configState: Array<{
+        source: string;
+        key: string;
+        value: string;
+        persistence: "env-file" | "env-var";
+    }>;
     counts: {
         terminal: number;
         browser: number;
         buildErrors: number;
+        runtimeErrors: number;
     };
 }
+/** Read config state from .env files and process env. Returns redacted key-value pairs. */
+export declare function readConfigState(cwd: string): Array<{
+    source: string;
+    key: string;
+    value: string;
+    persistence: "env-file" | "env-var";
+}>;
 /**
  * Write live context snapshot to .debug/live-context.json.
  * Called periodically by the serve process.

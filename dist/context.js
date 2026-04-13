@@ -314,6 +314,16 @@ export function classifyError(raw) {
         [/unwrap\(\).*on.*Err/i, "rust-panic", "fatal", "Called unwrap() on Err — use match or ? operator to handle the error"],
         [/borrow.*already.*mutably|cannot borrow/i, "rust-borrow", "fatal", "Rust borrow checker error — check for overlapping mutable references"],
         [/overflow|underflow/i, "rust-arithmetic", "error", "Integer overflow/underflow — use checked_add/checked_sub or wrapping operations"],
+        // ── React-specific (check before generic JS errors) ──
+        [/hydration|Hydration|server.*client.*mismatch|content.*does.*not.*match|text.*content.*mismatch|did not match.*server/i, "react-hydration", "error", "React hydration mismatch — server-rendered HTML differs from client. Check dynamic content (dates, Math.random) or conditional rendering based on typeof window."],
+        [/Minified React error #\d+/i, "react-minified", "error", "Minified React error — visit the URL in the message for the full error. Consider using the development build for better diagnostics."],
+        [/Maximum update depth exceeded/i, "react-infinite-loop", "error", "Infinite re-render loop — a setState call in useEffect or render is triggering itself. Check dependency arrays."],
+        [/Cannot update a component.*while rendering/i, "react-render-update", "error", "State update during render — move the setState call into useEffect or an event handler."],
+        [/Invalid hook call/i, "react-hooks", "fatal", "Invalid hook call — hooks can only be called at the top level of a function component. Check for duplicate React versions or conditional hook calls."],
+        [/Warning:.*(?:componentWillMount|componentWillReceiveProps|componentWillUpdate)\b.*has been renamed/i, "react-deprecated-lifecycle", "warning", "Deprecated React lifecycle method — migrate to modern equivalents (componentDidMount, getDerivedStateFromProps, getSnapshotBeforeUpdate)."],
+        [/Warning:.*Each child in a (?:list|array) should have a unique "key" prop/i, "react-missing-key", "warning", "Missing key prop on list items — add a stable, unique key to each element in the array."],
+        [/Warning:.*(?:React does not recognize|Unknown prop|Invalid DOM property)/i, "react-dom-prop", "warning", "Invalid DOM prop — check for camelCase (className vs class) or custom attribute naming."],
+        [/Warning:.*Can't perform a React state update on an unmounted component/i, "react-unmounted-update", "warning", "State update on unmounted component — cancel async operations in cleanup function."],
         // ── General (JS/TS/Python/Go) ──
         [/TypeError/i, "type", "error", "Check for null/undefined values being accessed as objects"],
         [/ReferenceError/i, "reference", "error", "Check for typos in variable/function names or missing imports"],

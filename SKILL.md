@@ -6,7 +6,7 @@ tools: ["debug_investigate", "debug_hypothesis", "debug_recall", "debug_patterns
 
 # stackpack-debug — Runtime DevTools for AI Agents
 
-The toolkit captures what's actually happening at runtime — terminal output, browser console, build errors, TypeScript errors, git diffs, screenshots, and cross-session memory. It gives you the same signals a developer sees in browser DevTools and terminal.
+The toolkit captures what's actually happening at runtime — terminal output, browser console, build errors, runtime errors (server-side console.error, unhandled rejections, stack traces), TypeScript errors, git diffs, configuration state, screenshots, and cross-session memory. It gives you the same signals a developer sees in browser DevTools and terminal.
 
 ## CRITICAL: Read debug://status FIRST
 
@@ -14,6 +14,8 @@ The toolkit captures what's actually happening at runtime — terminal output, b
 - Full terminal output (not just errors — app state logs too)
 - Browser console (all logs, errors, warnings, network failures)
 - Build errors (Vite, tsc, webpack, ESLint)
+- Runtime errors (server-side unhandled rejections, stack traces, connection errors — not visible in browser devtools)
+- Configuration state (AI provider settings, model selection, env file values with persistence tracking)
 - TypeScript errors (proactive `tsc --noEmit`)
 - Git activity (recent commits, uncommitted changes)
 - Tauri logs (auto-discovered)
@@ -42,6 +44,7 @@ This is updated every 5 seconds. It tells you what's happening RIGHT NOW without
 - User pastes a stack trace, error message, or console output
 - User references console errors, build warnings, or compiler output
 - User says "it crashes", "it panics", "it shows an error"
+- "resets", "setting", "config", "provider", "wrong endpoint", "wrong model"
 
 **Do NOT use only when:**
 - User asks for a brand new feature with no existing bug
@@ -56,7 +59,9 @@ This is updated every 5 seconds. It tells you what's happening RIGHT NOW without
 |---|---|---|
 | Source code at crash site | Read 3-5 files guessing | 50-line window around exact line |
 | Runtime errors | Ask user to paste | Auto-captured from terminal |
+| Server-side errors | Invisible (console.error in API routes) | Parsed from stderr with stack traces |
 | Browser console | Cannot access | All console.log/warn/error |
+| Config state | Read .env files manually | Auto-reads env files with persistence tracking |
 | TypeScript errors | Run tsc yourself | Auto-runs tsc --noEmit |
 | Git changes | Run git diff yourself | Actual diff content included |
 | Build errors | Check terminal yourself | Parsed and structured |
@@ -86,7 +91,7 @@ This is updated every 5 seconds. It tells you what's happening RIGHT NOW without
 ## Tool Reference
 
 ### debug_investigate
-**Start here. Always.** Returns: error classification, source code (50-line window), runtime output (terminal + browser + Tauri logs), TypeScript errors, git diff content, build errors, past solutions, visual state.
+**Start here. Always.** Returns: error classification, source code (50-line window), runtime output (terminal + browser + Tauri logs), server-side runtime errors (unhandled rejections, stack traces), configuration state (provider settings, env file values), TypeScript errors, git diff content, build errors, past solutions, visual state.
 
 ```
 # Runtime error

@@ -354,7 +354,9 @@ This project has stackpack-debug running. It captures live runtime data from the
 Before using Read/Grep/Bash to explore code, check the toolkit first.
 It provides runtime context that file reading cannot:
 - Terminal output (compiler warnings, panics, app state logs)
+- Server-side runtime errors (unhandled rejections, stack traces, connection errors)
 - Browser console (console.error, IPC failures, network errors)
+- Configuration state (provider settings, env file values, persistence tracking)
 - TypeScript errors (proactive tsc --noEmit)
 - Build errors, git diffs, past solutions, screenshots
 
@@ -385,6 +387,8 @@ debug_verify({ sessionId, command: "npm run build" })
 |---|---|---|
 | Runtime errors, app state | \`debug://status\` | Always first |
 | Deep error analysis | \`debug_investigate\` | Stack traces, error messages |
+| Server-side runtime errors | \`debug://status\` | Unhandled rejections, console.error in API routes |
+| Configuration/provider state | \`debug://status\` | Wrong endpoint, setting resets, provider mismatch |
 | Performance metrics | \`debug_perf\` | "slow", "laggy", load time issues |
 | Visual/layout state | \`debug_visual\` | "overlap", "misaligned", layout bugs |
 | Long-running output | \`debug_capture\` with \`wait: true\` | Async ops, build processes, generation tasks |
@@ -396,7 +400,7 @@ For async/long-running: \`debug_capture\` with \`wait: true\` to block until out
 
 ## Triggers — use toolkit when user says:
 
-bug, error, issue, crash, panic, broken, fails, fix, debug, investigate, review errors, check the app, what's wrong, doesn't work, overlap, misaligned, layout, visual, slow, laggy, performance, test failure
+bug, error, issue, crash, panic, broken, fails, fix, debug, investigate, review errors, check the app, what's wrong, doesn't work, overlap, misaligned, layout, visual, slow, laggy, performance, test failure, resets, setting, config, provider, wrong endpoint
 
 ## Full Diagnostic Sweep
 

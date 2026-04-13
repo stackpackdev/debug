@@ -79,6 +79,150 @@ export function parseBuildError(text) {
     }
     return null;
 }
+const RUNTIME_PATTERNS = [
+    // Node.js unhandled promise rejection
+    {
+        test: /UnhandledPromiseRejection|unhandledRejection|Unhandled Promise/i,
+        type: "unhandled-rejection",
+        extract: (text) => {
+            const msg = text.match(/(?:UnhandledPromiseRejection\w*:\s*)(.+?)(?:\n|$)/i)?.[1]
+                ?? text.match(/Unhandled Promise[^:]*:\s*(.+?)(?:\n|$)/i)?.[1]
+                ?? text.split("\n")[0];
+            const fileLine = text.match(/at\s+\S+\s+\(([^:]+):(\d+):\d+\)/);
+            return {
+                message: msg ?? text.split("\n")[0],
+                file: fileLine?.[1] ?? null,
+                line: fileLine?.[2] ? +fileLine[2] : null,
+                stack: text.includes("\n    at ") ? text.slice(text.indexOf("\n    at ")) : null,
+            };
+        },
+    },
+    // Node.js uncaught exception
+    {
+        test: /uncaughtException|RangeError|TypeError|ReferenceError|SyntaxError/,
+        type: "uncaught-exception",
+        extract: (text) => {
+            const typeMatch = text.match(/(RangeError|TypeError|ReferenceError|SyntaxError):\s*(.+?)(?:\n|$)/);
+            const msg = typeMatch ? `${typeMatch[1]}: ${typeMatch[2]}` : text.split("\n")[0];
+            const fileLine = text.match(/at\s+\S+\s+\(([^:]+):(\d+):\d+\)/)
+                ?? text.match(/at\s+([^:]+):(\d+):\d+/);
+            return {
+                message: msg ?? text.split("\n")[0],
+                file: fileLine?.[1] ?? null,
+                line: fileLine?.[2] ? +fileLine[2] : null,
+                stack: text.includes("\n    at ") ? text.slice(text.indexOf("\n    at ")) : null,
+            };
+        },
+    },
+    // ECONNREFUSED / ECONNRESET / ETIMEDOUT
+    {
+        test: /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND/,
+        type: "connection-error",
+        extract: (text) => {
+            const code = text.match(/(ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND)/)?.[1];
+            const addr = text.match(/(?:connect\s+)?(?:ECONN\w+|ETIMEDOUT|ENOTFOUND)\s+(?:[\d.]+:)?(\S+)/)?.[1];
+            return {
+                message: `${code}: ${addr ?? "unknown address"}`,
+                file: null,
+                line: null,
+                stack: null,
+            };
+        },
+    },
+    // Generic "Error:" with stack trace (multiline — catches console.error with Error objects)
+    {
+        test: /^\s*Error:\s|^\s*\w+Error:/,
+        type: "console-error",
+        extract: (text) => {
+            const firstLine = text.split("\n")[0]?.trim();
+            const fileLine = text.match(/at\s+\S+\s+\(([^:]+):(\d+):\d+\)/)
+                ?? text.match(/at\s+([^:]+):(\d+):\d+/);
+            return {
+                message: firstLine ?? text.slice(0, 200),
+                file: fileLine?.[1] ?? null,
+                line: fileLine?.[2] ? +fileLine[2] : null,
+                stack: text.includes("\n    at ") ? text.slice(text.indexOf("\n    at ")) : null,
+            };
+        },
+    },
+    // Server-side 500/4xx errors logged to stderr (e.g., Next.js "Error: ..." or "[ERROR]")
+    {
+        test: /\[ERROR\]|ERROR:|status(?:Code)?:\s*[45]\d{2}|HTTP\s+[45]\d{2}/i,
+        type: "server-error",
+        extract: (text) => {
+            const statusMatch = text.match(/status(?:Code)?:\s*(\d{3})|HTTP\s+(\d{3})/i);
+            const status = statusMatch?.[1] ?? statusMatch?.[2] ?? "";
+            const msg = text.match(/\[ERROR\]\s*(.+?)(?:\n|$)/i)?.[1]
+                ?? text.match(/ERROR:\s*(.+?)(?:\n|$)/i)?.[1]
+                ?? text.split("\n")[0];
+            return {
+                message: status ? `HTTP ${status}: ${msg}` : (msg ?? text.split("\n")[0]),
+                file: null,
+                line: null,
+                stack: null,
+            };
+        },
+    },
+];
+// Multiline accumulator for stack traces split across multiple stderr chunks
+let runtimeAccumulator = "";
+let runtimeAccumulatorTimer = null;
+function flushRuntimeAccumulator() {
+    if (!runtimeAccumulator)
+        return;
+    const text = runtimeAccumulator;
+    runtimeAccumulator = "";
+    runtimeAccumulatorTimer = null;
+    const parsed = parseRuntimeError(text);
+    if (parsed)
+        pushRuntimeErrorDeduped(parsed);
+}
+export function parseRuntimeError(text) {
+    for (const pattern of RUNTIME_PATTERNS) {
+        if (pattern.test.test(text)) {
+            const extracted = pattern.extract(text);
+            if (!extracted)
+                continue;
+            return {
+                type: pattern.type,
+                message: extracted.message ?? text.split("\n")[0] ?? "",
+                file: extracted.file ?? null,
+                line: extracted.line ?? null,
+                stack: extracted.stack ?? null,
+                raw: text,
+            };
+        }
+    }
+    return null;
+}
+/** Feed stderr lines to the runtime error parser. Call per-chunk (may be multiline). */
+export function feedRuntimeError(text) {
+    // If this chunk contains a stack trace continuation, accumulate
+    if (runtimeAccumulator && /^\s+at\s/.test(text)) {
+        runtimeAccumulator += "\n" + text;
+        // Reset timer
+        if (runtimeAccumulatorTimer)
+            clearTimeout(runtimeAccumulatorTimer);
+        runtimeAccumulatorTimer = setTimeout(flushRuntimeAccumulator, 100);
+        return;
+    }
+    // Flush any pending accumulation
+    if (runtimeAccumulator)
+        flushRuntimeAccumulator();
+    // Check if this starts a new runtime error
+    const immediate = parseRuntimeError(text);
+    if (immediate) {
+        if (text.includes("\n    at ") || /^\s*\w+Error:/.test(text)) {
+            // Complete error with stack — push directly
+            pushRuntimeErrorDeduped(immediate);
+        }
+        else {
+            // Might get stack trace in next chunk — start accumulating
+            runtimeAccumulator = text;
+            runtimeAccumulatorTimer = setTimeout(flushRuntimeAccumulator, 100);
+        }
+    }
+}
 // --- Ring buffer: fixed-size, no allocation on push ---
 class RingBuffer {
     buf;
@@ -126,6 +270,7 @@ class RingBuffer {
 export const terminalBuffer = new RingBuffer(500);
 export const browserBuffer = new RingBuffer(200);
 export const buildBuffer = new RingBuffer(100);
+export const runtimeBuffer = new RingBuffer(100);
 // --- Immutable recent window: last 60s of terminal output, immune to drain ---
 const RECENT_WINDOW_MS = 60_000;
 const recentWindow = [];
@@ -203,6 +348,17 @@ function pushBuildErrorDeduped(err) {
         recentBuildErrorKeys.clear();
     buildBuffer.push(err);
 }
+// Runtime error dedup by message
+const recentRuntimeErrorKeys = new Set();
+function pushRuntimeErrorDeduped(err) {
+    const key = `${err.type}:${err.message.slice(0, 100)}`;
+    if (recentRuntimeErrorKeys.has(key))
+        return;
+    recentRuntimeErrorKeys.add(key);
+    if (recentRuntimeErrorKeys.size > 200)
+        recentRuntimeErrorKeys.clear();
+    runtimeBuffer.push(err);
+}
 /**
  * Peek at recent terminal + browser + build output WITHOUT draining.
  * Used by debug_investigate to auto-include runtime context.
@@ -211,14 +367,17 @@ export function peekRecentOutput(opts = {}) {
     const terminal = terminalBuffer.peek(opts.terminalLines ?? 50);
     const browser = browserBuffer.peek(opts.browserLines ?? 30);
     const build = buildBuffer.peek(opts.buildErrors ?? 20);
+    const runtime = runtimeBuffer.peek(opts.runtimeErrors ?? 20);
     return {
         terminal,
         browser,
         buildErrors: build,
+        runtimeErrors: runtime,
         counts: {
             terminal: terminalBuffer.length,
             browser: browserBuffer.length,
             buildErrors: buildBuffer.length,
+            runtimeErrors: runtimeBuffer.length,
         },
     };
 }
@@ -264,6 +423,9 @@ export function waitForNewOutput(opts = {}) {
  */
 export function drainBuildErrors() {
     return buildBuffer.drain();
+}
+export function drainRuntimeErrors() {
+    return runtimeBuffer.drain();
 }
 const trackedProcesses = new Map();
 function trackProcess(pid, command) {
@@ -315,6 +477,9 @@ export function pipeProcess(child, commandLabel = "dev server") {
             const buildErr = parseBuildError(text);
             if (buildErr)
                 pushBuildErrorDeduped(buildErr);
+            // Check stderr chunks for runtime errors (unhandled rejections, stack traces, etc.)
+            if (isErr)
+                feedRuntimeError(text);
             for (const line of text.split("\n")) {
                 const t = line.trim();
                 if (!t)
@@ -566,13 +731,95 @@ export function extractFilePathsFromError(data) {
     }
     return results.slice(0, 5);
 }
+// --- Config state reading (env files + process env) ---
+/** Keys relevant for debugging provider/configuration issues. */
+const CONFIG_KEYS = [
+    // AI providers
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "TOGETHER_API_KEY", "GROQ_API_KEY",
+    "OPENAI_BASE_URL", "OLLAMA_BASE_URL", "OLLAMA_HOST",
+    // App config
+    "NODE_ENV", "PORT", "HOST", "DATABASE_URL", "NEXTAUTH_URL", "NEXTAUTH_SECRET",
+    "AUTH_SECRET", "AUTH_URL",
+    // Provider selection (common patterns)
+    "AI_PROVIDER", "LLM_PROVIDER", "MODEL_PROVIDER", "DEFAULT_PROVIDER",
+    "AI_MODEL", "LLM_MODEL", "MODEL_NAME", "DEFAULT_MODEL",
+];
+/** Read config state from .env files and process env. Returns redacted key-value pairs. */
+export function readConfigState(cwd) {
+    const results = [];
+    const seen = new Set();
+    // Read .env files (most specific first — .env.local overrides .env)
+    const envFiles = [".env.local", ".env.development.local", ".env.development", ".env"];
+    for (const file of envFiles) {
+        const filePath = join(cwd, file);
+        if (!existsSync(filePath))
+            continue;
+        try {
+            const content = readFileSync(filePath, "utf-8");
+            for (const line of content.split("\n")) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith("#"))
+                    continue;
+                const eqIdx = trimmed.indexOf("=");
+                if (eqIdx < 1)
+                    continue;
+                const key = trimmed.slice(0, eqIdx).trim();
+                const rawValue = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, "");
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    results.push({
+                        source: file,
+                        key,
+                        value: redactConfigValue(key, rawValue),
+                        persistence: "env-file",
+                    });
+                }
+            }
+        }
+        catch { /* skip unreadable files */ }
+    }
+    // Add process.env values for config keys not found in files
+    for (const key of CONFIG_KEYS) {
+        if (seen.has(key) || !process.env[key])
+            continue;
+        results.push({
+            source: "process.env",
+            key,
+            value: redactConfigValue(key, process.env[key]),
+            persistence: "env-var",
+        });
+    }
+    return results;
+}
+/** Redact secret values, show non-secret config values in full. */
+function redactConfigValue(key, value) {
+    // Show non-secret values in full (ports, URLs without credentials, provider names, model names)
+    const isSafe = /^(NODE_ENV|PORT|HOST|AI_PROVIDER|LLM_PROVIDER|MODEL_PROVIDER|DEFAULT_PROVIDER|AI_MODEL|LLM_MODEL|MODEL_NAME|DEFAULT_MODEL|OLLAMA_HOST|OLLAMA_BASE_URL|OPENAI_BASE_URL)$/i.test(key);
+    if (isSafe)
+        return value;
+    // For URLs, show the host but redact path/credentials
+    if (/URL$/i.test(key) && value.startsWith("http")) {
+        try {
+            const u = new URL(value);
+            return `${u.protocol}//${u.host}/***`;
+        }
+        catch { /* fall through */ }
+    }
+    // API keys and secrets — show prefix only
+    if (/KEY|SECRET|TOKEN|PASSWORD/i.test(key)) {
+        if (value.length <= 8)
+            return "***";
+        return value.slice(0, 7) + "***";
+    }
+    return redactSensitiveData(value);
+}
 /**
  * Write live context snapshot to .debug/live-context.json.
  * Called periodically by the serve process.
  */
 export function writeLiveContext(cwd) {
     // Status shows max ~110 lines — no need to peek more than that
-    const recent = peekRecentOutput({ terminalLines: 100, browserLines: 50, buildErrors: 30 });
+    const recent = peekRecentOutput({ terminalLines: 100, browserLines: 50, buildErrors: 30, runtimeErrors: 20 });
     const context = {
         updatedAt: new Date().toISOString(),
         terminal: recent.terminal.map((c) => {
@@ -587,6 +834,10 @@ export function writeLiveContext(cwd) {
         buildErrors: recent.buildErrors.map((e) => ({
             tool: e.tool, file: e.file, line: e.line, code: e.code, message: e.message,
         })),
+        runtimeErrors: recent.runtimeErrors.map((e) => ({
+            type: e.type, message: e.message, file: e.file, line: e.line, stack: e.stack,
+        })),
+        configState: readConfigState(cwd),
         counts: recent.counts,
     };
     const dir = join(cwd, ".debug");

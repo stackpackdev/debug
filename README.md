@@ -2,7 +2,7 @@
 
 # stackpack-debug
 
-Runtime DevTools for AI agents. Gives your agent the same signals a developer sees in browser DevTools and terminal — console logs, network errors, build failures, runtime exceptions — over MCP, so it can debug from captured output instead of guessing from source code.
+Runtime DevTools for AI agents. Gives your agent the same signals a developer sees in browser DevTools and terminal — console logs, network errors, build failures, runtime exceptions, server-side errors, and configuration state — over MCP, so it can debug from captured output instead of guessing from source code.
 
 ```bash
 npm i -g stackpack-debug            # install globally (one time)
@@ -179,10 +179,12 @@ The capture works by running your dev server behind a lightweight HTTP proxy tha
 │                     │                                    │                  │
 │ • stdout/stderr     │                                    │ debug://status   │
 │   capture           │                                    │ (live resource)  │
-│ • browser console   │                                    │                  │
-│   via proxy/plugin  │                                    │ debug_investigate│
-│ • build error       │                                    │ (deep analysis)  │
-│   parsing           │                                    │                  │
+│ • runtime error     │                                    │                  │
+│   parsing (stderr)  │                                    │ debug_investigate│
+│ • browser console   │                                    │ (deep analysis)  │
+│   via proxy/plugin  │                                    │                  │
+│ • build error       │                                    │ • config state   │
+│   parsing           │                                    │   (.env files)   │
 └─────────────────────┘                                    └──────────────────┘
 ```
 
@@ -205,6 +207,8 @@ The capture works by running your dev server behind a lightweight HTTP proxy tha
 |---|---|---|
 | Runtime errors, app state | `debug://status` | Always first |
 | Deep error analysis | `debug_investigate` | Stack traces, error messages |
+| Server-side runtime errors | `debug://status` | Unhandled rejections, console.error in API routes |
+| Configuration/provider state | `debug://status` | Wrong endpoint, setting resets, provider mismatch |
 | Performance metrics | `debug_perf` | Slow page loads, layout shifts |
 | Visual/layout state | `debug_visual` | Overlap, misalignment, CSS bugs |
 | Long-running output | `debug_capture` with `wait: true` | Async ops, build processes, generation tasks |
@@ -288,6 +292,8 @@ When running in serve mode, your terminal shows a live feed of what the agent is
 
 - Error classification (type, category, severity, suggestion)
 - Error chain unwrapping (RetryError, AI SDK wrappers — extracts HTTP status, URL, provider)
+- Server-side runtime errors (unhandled rejections, stack traces, connection errors from stderr)
+- Configuration state (AI provider settings, model selection, env file values with persistence tracking)
 - Provider/endpoint mismatch detection (flags when the app hits a different provider than expected)
 - Configuration drift hints (suggests checking persistence when settings may have been lost)
 - Source code at the exact crash site (highlighted)
@@ -538,7 +544,7 @@ src/
   ghost-bridge.ts  — MCP client for Ghost OS (screenshots, DOM, inspect)
   context.ts       — Investigation engine (stack parsing, source, git, env)
   memory.ts        — WAL-backed memory with inverted index + staleness + patterns
-  capture.ts       — Ring buffers, terminal pipe, build error parsing, Tauri logs
+  capture.ts       — Ring buffers, terminal pipe, build/runtime error parsing, config state, Tauri logs
   session.ts       — Data model, atomic persistence, visual + perf context
   instrument.ts    — Language-aware instrumentation (JS/TS/Py/Go/Rust)
   cleanup.ts       — Single-pass marker removal with verification
@@ -562,6 +568,15 @@ src/
 ```
 
 ## Changelog
+
+### v0.21.0 — Server-Side Visibility + Configuration Awareness
+
+- **Runtime error parsing** — stderr output is now parsed for Node.js runtime errors: unhandled promise rejections, uncaught exceptions (TypeError, ReferenceError, etc.), connection errors (ECONNREFUSED, ETIMEDOUT), server error logs (`[ERROR]`, HTTP 4xx/5xx), and `console.error` with stack traces. These appear as a dedicated "Runtime Errors (server-side)" section in `debug://status` with type, file location, message, and stack trace — errors that were previously invisible because they didn't reach browser devtools.
+- **Multiline stack trace accumulator** — stack traces split across multiple stderr chunks are reassembled before parsing (100ms accumulation window), so `Error: message` followed by `    at fn (file:line)` in separate writes are captured as a single structured error.
+- **Configuration state in status** — `debug://status` now shows a "Configuration State" section with AI provider settings, model selection, and endpoint URLs read from `.env`, `.env.local`, `.env.development`, and `process.env`. Values are redacted (API keys show 7-char prefix only, URLs show host only), and each entry tracks its persistence source (`env-file` vs `env-var`). Warns when all provider settings are env-var-only (will reset on server restart).
+- **Config state in investigations** — `debug_investigate` returns `configState` with provider-related settings and `runtimeErrors` with structured server-side errors, giving the agent immediate visibility into configuration bugs without needing to read env files manually.
+- **Runtime errors in severity summary** — unhandled rejections and uncaught exceptions are classified as `fatal` in the issues summary; other runtime errors as `error`. Health trend tracking includes these new signals.
+- **Updated activation rules** — new trigger words: "resets", "setting", "config", "provider", "wrong endpoint", "wrong model". Updated tool decision tree with server-side runtime errors and configuration state signals.
 
 ### v0.20.0 — Systematic Debugging Discipline
 

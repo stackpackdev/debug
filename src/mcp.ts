@@ -21,7 +21,7 @@ import {
 } from "./session.js";
 import { instrumentFile } from "./instrument.js";
 import { cleanupSession } from "./cleanup.js";
-import { drainCaptures, runAndCapture, getRecentCaptures, readTauriLogs, discoverTauriLogs, drainBuildErrors, peekRecentOutput, peekRecentWindow, readLiveContext, setLighthouseRunning, waitForNewOutput, extractFilePathsFromError, getTrackedProcesses, type LiveContext } from "./capture.js";
+import { drainCaptures, runAndCapture, getRecentCaptures, readTauriLogs, discoverTauriLogs, drainBuildErrors, peekRecentOutput, peekRecentWindow, readLiveContext, setLighthouseRunning, waitForNewOutput, extractFilePathsFromError, getTrackedProcesses, readConfigState, type LiveContext, type RuntimeError } from "./capture.js";
 import { investigate, isVisualError, unwrapErrorChain, classifyError, detectProviderMismatch } from "./context.js";
 import { validateCommand } from "./security.js";
 import { remember, recall, markUsed, memoryStats, detectPatterns, maybeArchive, type CausalLink } from "./memory.js";
@@ -328,6 +328,45 @@ function buildLiveStatus(cwd: string, since?: { timestamp: string; terminalCount
       sections.push("");
     }
 
+    // === RUNTIME ERRORS (server-side console.error, unhandled rejections, stack traces) ===
+    if (live.runtimeErrors && live.runtimeErrors.length > 0) {
+      sections.push("## Runtime Errors (server-side)\n");
+      sections.push("*These are errors from the Node.js process (console.error, unhandled rejections, stack traces) — not visible in browser devtools.*\n");
+      for (const e of live.runtimeErrors.slice(-15)) {
+        const loc = e.file ? ` at ${e.file}${e.line ? `:${e.line}` : ""}` : "";
+        sections.push(`- **${e.type}**${loc} — ${e.message}`);
+        if (e.stack) {
+          // Show first 3 lines of stack trace
+          const stackLines = e.stack.split("\n").slice(0, 3).map(l => `  ${l.trim()}`);
+          for (const sl of stackLines) sections.push(sl);
+        }
+      }
+      sections.push("");
+    }
+
+    // === CONFIGURATION STATE (env files, provider settings) ===
+    if (live.configState && live.configState.length > 0) {
+      // Only show config section when there are AI/provider-related settings
+      const providerKeys = live.configState.filter(c =>
+        /PROVIDER|MODEL|OLLAMA|OPENAI|ANTHROPIC|GOOGLE|GROQ|TOGETHER|BASE_URL/i.test(c.key)
+      );
+      if (providerKeys.length > 0) {
+        sections.push("## Configuration State\n");
+        sections.push("*Provider and model settings detected from env files and process.env:*\n");
+        for (const c of providerKeys) {
+          const icon = c.persistence === "env-file" ? "📁" : "🔧";
+          sections.push(`- ${icon} \`${c.key}\` = \`${c.value}\` *(${c.source})*`);
+        }
+        // Persistence hint
+        const envFileCount = providerKeys.filter(c => c.persistence === "env-file").length;
+        const envVarCount = providerKeys.filter(c => c.persistence === "env-var").length;
+        if (envVarCount > 0 && envFileCount === 0) {
+          sections.push("\n> **Warning**: All provider settings are from `process.env` only (no .env file). These will reset on server restart.");
+        }
+        sections.push("");
+      }
+    }
+
     // === FULL BROWSER CONSOLE (unfiltered — agent needs ALL logs) ===
     if (live.browser.length > 0) {
       const isError = (b: LiveContext["browser"][number]) => {
@@ -482,6 +521,12 @@ function buildLiveStatus(cwd: string, since?: { timestamp: string; terminalCount
     }
     for (let i = 0; i < tscErrors.length; i++) {
       allClassified.push({ severity: "error", category: "typescript", source: "tsc" });
+    }
+    if (live.runtimeErrors) {
+      for (const re of live.runtimeErrors) {
+        const sev = re.type === "unhandled-rejection" || re.type === "uncaught-exception" ? "fatal" : "error";
+        allClassified.push({ severity: sev, category: `runtime-${re.type}`, source: "server" });
+      }
     }
 
     const totalIssues = allClassified.length;
@@ -963,6 +1008,20 @@ Start every debugging session with this tool.`,
         code: e.code,
         message: e.message,
       })) : undefined,
+      runtimeErrors: recentOutput.runtimeErrors.length > 0 ? recentOutput.runtimeErrors.map((e) => ({
+        type: e.type,
+        message: e.message,
+        file: e.file,
+        line: e.line,
+        stack: e.stack?.split("\n").slice(0, 5).join("\n") ?? null,
+      })) : undefined,
+      configState: (() => {
+        const config = readConfigState(cwd);
+        const providerConfig = config.filter(c =>
+          /PROVIDER|MODEL|OLLAMA|OPENAI|ANTHROPIC|GOOGLE|GROQ|TOGETHER|BASE_URL/i.test(c.key)
+        );
+        return providerConfig.length > 0 ? providerConfig : undefined;
+      })(),
       visualError,
       userFrames: result.frames.filter((f) => f.isUserCode).map((f) => ({
         fn: f.fn,
