@@ -672,12 +672,8 @@ async function guidedSetup(cwd: string): Promise<void> {
   if (mcpExists) {
     success(`Already set up in this project. Ready to use in Claude Code.\n`);
 
-    // Check for updates — background auto-upgrade is already running,
-    // but show a message so the user knows what's happening
-    const update = checkForUpdate();
-    if (update.updateAvailable) {
-      info(`\n  ${c.yellow}${c.bold}Upgrading:${c.reset} v${update.current} ${sym.arrow} v${update.latest} ${c.dim}(in background)${c.reset}`);
-    }
+    // No synchronous update check here — backgroundSelfUpgrade() in main()
+    // handles version checking and upgrading. It prints a message when done.
 
     // Silently update SKILL.md and command on every run (picks up new content from package updates)
     updateSkillMd(cwd);
