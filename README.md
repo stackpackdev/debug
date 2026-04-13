@@ -57,36 +57,7 @@ spdg import <path>   # import a knowledge pack into this project
 
 All optional — the toolkit works without any of them. When a tool needs an integration that's missing, you get a clear setup message instead of a cryptic error.
 
-### Ghost OS Deep Integration
-
-When Ghost OS is installed, stackpack-debug connects to it internally as an MCP client — no manual orchestration needed:
-
-```
-debug_investigate detects CSS bug
-  → internally calls ghost_screenshot + ghost_read
-  → saves screenshot to .debug/screenshots/
-  → returns: { visualCapture: { screenshot, elementsFound }, visualHint }
-
-debug_verify after fix
-  → auto-captures after-fix screenshot
-  → returns: { visualVerification: { before, after } }
-```
-
-The agent never needs to call Ghost OS tools directly. Visual capture is automatic for CSS/layout bugs (configurable via `.debug/config.json`):
-
-```json
-{
-  "visual": {
-    "autoCapture": "auto",
-    "captureOnInvestigate": true,
-    "captureOnVerify": true
-  }
-}
-```
-
-Options: `"auto"` (default — captures on visual bugs), `"manual"` (agent-triggered via `debug_visual`), `"off"`.
-
-Without Ghost OS, all visual features gracefully fall back to advisory hints. The `debug://status` report includes a **Visual Debugging** section showing connection state, last error, and setup instructions — so the agent always knows why visual capture isn't working instead of failing silently.
+**Ghost OS** (macOS only) enables auto-screenshots on visual/CSS bugs via `debug_investigate` and before/after comparison on `debug_verify`. When not installed, all visual features gracefully fall back to advisory hints — no tools break. Only `debug_visual` requires it explicitly. Configurable via `.debug/config.json` (`"visual.autoCapture": "auto" | "manual" | "off"`).
 
 ### Installing Integrations
 
@@ -133,13 +104,7 @@ spdg doctor
 
 ### Capability-Aware Runtime
 
-The MCP server detects available integrations at startup and connects to Ghost OS if available. Tool behavior adapts:
-
-- **Visual bugs:** If Ghost OS is connected, `debug_investigate` auto-captures screenshots and DOM state. If not, it suggests manual tools or shows setup guidance. If capture fails, the agent gets a diagnostic explaining why (not a silent failure).
-- **Performance:** If Lighthouse isn't installed, `debug_perf` returns setup instructions immediately instead of failing after a 60-second timeout. For Tauri/Electron apps, metrics are flagged as low-reliability with alternative profiling advice.
-- **Browser logs:** Status report separates browser errors by source context — webview, external Chrome, or Lighthouse-triggered — so the agent doesn't waste time investigating artifacts.
-- **Verification:** If a visual bug was captured during investigation, `debug_verify` auto-captures an after-fix screenshot for comparison.
-- **SKILL.md:** Includes a capabilities table so the agent knows upfront which tools are available — no wasted calls.
+The MCP server detects available integrations at startup. Tools adapt to what's installed — missing integrations return setup instructions instead of cryptic errors. The agent always knows what's available via `debug_setup({ action: "check" })` and the SKILL.md capabilities table.
 
 ## See It Work
 
@@ -189,18 +154,23 @@ stackpack-debug eliminates that loop. It captures terminal output, browser conso
 
 ## How It Works
 
-### Two modes
+stackpack-debug runs as an MCP server. Setup (`spdg`) registers it in `.mcp.json` so Claude Code loads it automatically. For deeper signal capture, wrap your dev server with `spdg serve`.
 
-**Serve mode** (recommended) — wraps your dev server to capture everything:
+### Why serve mode?
+
+Claude Code can already read terminal output. But it **cannot** access:
+- Browser console (`console.log`, `console.error`, unhandled rejections)
+- Network requests (failed API calls, CORS errors, wrong provider endpoints)
+- Real-time loop detection (agent spinning on the same error)
+
+`spdg serve` captures all of this by injecting a lightweight script into your app's HTML via an HTTP proxy. The MCP server reads the captured data and serves it through `debug://status`.
+
 ```bash
-spdg serve -- npm run dev     # web project
+spdg serve -- npm run dev           # web project
 spdg serve -- npm run tauri -- dev  # Tauri project
 ```
 
-**Pure MCP mode** — just the tools, no capture:
-```bash
-spdg   # setup only, agent calls tools manually
-```
+Without serve mode, the MCP tools still work — they just rely on static analysis (TypeScript errors, git diffs, file reading) instead of live runtime data.
 
 ### Architecture
 
@@ -296,22 +266,9 @@ Add to `.mcp.json`:
 }
 ```
 
-## Two Modes
+## Activity Feed
 
-**Pure MCP** (default) — Just the MCP server on stdio. Agent gets all tools. No wrapper needed.
-
-```bash
-spdg
-```
-
-**Serve** — Wraps your dev server. Adds browser console/network capture via HTTP proxy + WebSocket, plus a **live activity feed** showing what the toolkit does for the agent in real time.
-
-```bash
-spdg serve -- npm run dev
-spdg serve -- cargo tauri dev
-```
-
-Activity feed output (in your terminal while the agent debugs):
+When running in serve mode, your terminal shows a live feed of what the agent is doing:
 ```
   ⚡ investigate — "TypeError: Cannot read property 'x'" (triage: medium, files: 2, memoryHits: 1)
   💡 recall — found 1 past fix (87% confidence)
@@ -561,16 +518,6 @@ spdg doctor   # verify environment setup
 | **Chrome** | Any | Headless browser for Lighthouse | [google.com/chrome](https://google.com/chrome) |
 | **Ghost OS** | macOS only | Auto-screenshots, DOM capture, visual debugging | `brew install ghostwright/ghost-os/ghost-os` |
 | **Homebrew** | macOS | Required for Ghost OS + Chrome auto-install | [brew.sh](https://brew.sh) |
-
-### macOS-Specific (for Ghost OS)
-
-Ghost OS requires system permissions that must be granted manually:
-
-1. **Accessibility** — System Settings → Privacy & Security → Accessibility → Enable for Ghost OS
-2. **Input Monitoring** — System Settings → Privacy & Security → Input Monitoring → Enable for Ghost OS
-3. **Vision sidecar** (optional) — For web app visual grounding. Set up via `ghost setup`
-
-These permissions cannot be granted programmatically. The first time Ghost OS runs, macOS will prompt for each permission.
 
 ### What `spdg doctor` Checks
 
