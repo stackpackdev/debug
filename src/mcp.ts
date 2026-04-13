@@ -37,6 +37,7 @@ import { detectEnvironment, listInstallable, installIntegration, type Environmen
 import {
   connectToGhostOs, disconnectGhostOs, isGhostConnected, resetConnectionState,
   takeScreenshot, readScreen, findElements, annotateScreen, getVisualDiagnostic,
+  SCREEN_RECORDING_SETTINGS_URL,
 } from "./ghost-bridge.js";
 import { screenshotDir, saveScreenshot, getPackageVersion, checkForUpdate, runSelfUpdate } from "./utils.js";
 import { enableActivityWriter, logActivity } from "./activity.js";
@@ -626,7 +627,11 @@ function appendActiveProcesses(sections: string[]): void {
 function appendVisualStatus(sections: string[]): void {
   const diag = getVisualDiagnostic();
   sections.push("## Visual Debugging\n");
-  if (diag.connected) {
+  if (diag.permissionDenied) {
+    sections.push("- Ghost OS: **Screen Recording permission not granted**");
+    sections.push("- Fix: `debug_setup action='fix-permissions'` — opens System Settings to grant access");
+    sections.push("- Then: `debug_setup action='connect'` to reconnect");
+  } else if (diag.connected) {
     sections.push(`- Ghost OS: **connected**${diag.lastSuccessAgo ? ` (last capture ${diag.lastSuccessAgo})` : ""}`);
   } else if (diag.binaryFound) {
     sections.push(`- Ghost OS: **not connected** (binary found at ${diag.binaryPath})`);
@@ -2293,13 +2298,32 @@ Requires Chrome installed. Gracefully skips if unavailable.`,
   // Check and install integrations
   server.tool(
     "debug_setup",
-    "Check available integrations and install missing ones. Actions: check = list status, install = install integration, connect = connect Ghost OS, disconnect = disconnect Ghost OS, check-update = check for newer version, update = update stackpack-debug to latest.",
+    "Check available integrations and install missing ones. Actions: check = list status, install = install integration, connect = connect Ghost OS, disconnect = disconnect Ghost OS, fix-permissions = open macOS Screen Recording settings for Ghost OS, check-update = check for newer version, update = update stackpack-debug to latest.",
     {
-      action: z.enum(["check", "install", "connect", "disconnect", "check-update", "update"]).describe("check = list status, install = install an integration, connect/disconnect = Ghost OS, check-update = check for newer version, update = update to latest"),
+      action: z.enum(["check", "install", "connect", "disconnect", "fix-permissions", "check-update", "update"]).describe("check = list status, install = install an integration, connect/disconnect = Ghost OS, fix-permissions = open Screen Recording settings, check-update = check for newer version, update = update to latest"),
       integration: z.string().optional().describe("Integration id to install: lighthouse, chrome, ghost-os"),
     },
     async ({ action, integration }) => {
       logActivity({ tool: "debug_setup", ts: Date.now(), summary: action === "install" ? `install ${integration ?? "?"}` : action });
+
+      if (action === "fix-permissions") {
+        if (process.platform !== "darwin") {
+          return text({ error: "fix-permissions is macOS only. Ghost OS requires macOS Screen Recording permission." });
+        }
+        try {
+          execSync(`open "${SCREEN_RECORDING_SETTINGS_URL}"`, { timeout: 5000 });
+        } catch { /* may fail in non-GUI context — still return instructions */ }
+        return text({
+          message: "Opening System Settings > Privacy & Security > Screen Recording.",
+          steps: [
+            "1. Find 'Ghost OS' (or 'ghost') in the list",
+            "2. Toggle it ON (you may need to click the lock icon first)",
+            "3. Restart Ghost OS: run `debug_setup action='connect'`",
+          ],
+          deepLink: SCREEN_RECORDING_SETTINGS_URL,
+          nextStep: "After granting permission, run debug_setup action='connect' to reconnect Ghost OS.",
+        });
+      }
 
       if (action === "check-update") {
         const update = checkForUpdate();
@@ -2418,6 +2442,14 @@ Requires Chrome installed. Gracefully skips if unavailable.`,
     async ({ sessionId, action, query, app }) => {
       logActivity({ tool: "debug_visual", ts: Date.now(), summary: action });
       if (!isGhostConnected()) {
+        const diag = getVisualDiagnostic();
+        if (diag.permissionDenied) {
+          return text({
+            error: "Ghost OS is connected but Screen Recording permission is not granted.",
+            fix: "Run debug_setup action='fix-permissions' to open System Settings and grant access.",
+            nextStep: "After granting permission, run debug_setup action='connect' to reconnect.",
+          });
+        }
         return text({
           error: "Ghost OS is not connected.",
           setup: "Use debug_setup action='install' integration='ghost-os'",
@@ -2431,7 +2463,17 @@ Requires Chrome installed. Gracefully skips if unavailable.`,
       switch (action) {
         case "screenshot": {
           const shot = await takeScreenshot(app);
-          if (!shot) return text({ error: "Screenshot failed." });
+          if (!shot) {
+            const diag = getVisualDiagnostic();
+            if (diag.permissionDenied) {
+              return text({
+                error: "Screenshot failed — Screen Recording permission not granted.",
+                fix: "Run debug_setup action='fix-permissions' to open System Settings and grant access.",
+                nextStep: "After granting permission, run debug_setup action='connect' to reconnect.",
+              });
+            }
+            return text({ error: "Screenshot failed.", lastError: diag.lastError });
+          }
           const path = saveScreenshot(cwd, sessionId, "manual", shot.image);
           if (session) {
             if (!session.visualContext) session.visualContext = { screenshots: [], domSnapshot: null };
@@ -2449,7 +2491,16 @@ Requires Chrome installed. Gracefully skips if unavailable.`,
         }
         case "annotate": {
           const annotated = await annotateScreen(app);
-          if (!annotated) return text({ error: "Annotation failed." });
+          if (!annotated) {
+            const diag = getVisualDiagnostic();
+            if (diag.permissionDenied) {
+              return text({
+                error: "Annotation failed — Screen Recording permission not granted.",
+                fix: "Run debug_setup action='fix-permissions' to open System Settings and grant access.",
+              });
+            }
+            return text({ error: "Annotation failed.", lastError: diag.lastError });
+          }
           const path = saveScreenshot(cwd, sessionId, "annotated", annotated.image);
           return text({ screenshot: path, labels: annotated.labels });
         }

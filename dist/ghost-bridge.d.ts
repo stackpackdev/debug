@@ -12,8 +12,13 @@ export interface VisualDiagnostic {
     lastError: string | null;
     lastSuccessTs: number | null;
     lastSuccessAgo: string | null;
+    permissionDenied: boolean;
 }
 export declare function getVisualDiagnostic(): VisualDiagnostic;
+/** macOS deep-link to System Settings > Privacy & Security > Screen Recording */
+export declare const SCREEN_RECORDING_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+/** Check if an error message indicates a Screen Recording permission issue */
+export declare function isPermissionError(errorMsg: string): boolean;
 export declare function connectToGhostOs(): Promise<boolean>;
 export declare function disconnectGhostOs(): Promise<void>;
 export declare function isGhostConnected(): boolean;

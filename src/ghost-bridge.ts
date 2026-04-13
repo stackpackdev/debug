@@ -19,6 +19,7 @@ let connectionAttempted = false;
 let lastError: string | null = null;
 let lastSuccessTs: number | null = null;
 let resolvedBinaryPath: string | null = null;
+let permissionDenied = false; // Tracks Screen Recording permission state
 
 export interface VisualDiagnostic {
   connected: boolean;
@@ -27,6 +28,7 @@ export interface VisualDiagnostic {
   lastError: string | null;
   lastSuccessTs: number | null;
   lastSuccessAgo: string | null;
+  permissionDenied: boolean;
 }
 
 export function getVisualDiagnostic(): VisualDiagnostic {
@@ -40,7 +42,16 @@ export function getVisualDiagnostic(): VisualDiagnostic {
     lastError,
     lastSuccessTs,
     lastSuccessAgo: ago,
+    permissionDenied,
   };
+}
+
+/** macOS deep-link to System Settings > Privacy & Security > Screen Recording */
+export const SCREEN_RECORDING_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+
+/** Check if an error message indicates a Screen Recording permission issue */
+export function isPermissionError(errorMsg: string): boolean {
+  return /screen.?recording.?permission|screen.?capture.?permission|not.?granted.*screen/i.test(errorMsg);
 }
 
 function findGhostBinary(): string | null {
@@ -118,22 +129,46 @@ async function callTool(name: string, args: Record<string, unknown> = {}): Promi
   if (!ghostClient) return null;
   try {
     const result = await ghostClient.callTool({ name, arguments: args });
-    lastSuccessTs = Date.now();
-    lastError = null;
     // MCP tool results have a content array
     if (result.content && Array.isArray(result.content) && result.content.length > 0) {
       const first = result.content[0] as Record<string, unknown>;
       if (first.type === "text") {
-        try { return JSON.parse(first.text as string); } catch { return first.text; }
+        let parsed: unknown;
+        try { parsed = JSON.parse(first.text as string); } catch { parsed = first.text; }
+        // Check for permission error in structured response
+        if (typeof parsed === "object" && parsed !== null) {
+          const obj = parsed as Record<string, unknown>;
+          const errorMsg = String(obj.error ?? obj.message ?? "");
+          if (isPermissionError(errorMsg) || obj.success === false && isPermissionError(JSON.stringify(obj))) {
+            permissionDenied = true;
+            lastError = `Screen Recording permission not granted. Fix: open "${SCREEN_RECORDING_SETTINGS_URL}" — grant permission to Ghost OS, then restart it.`;
+            return null;
+          }
+        }
+        lastSuccessTs = Date.now();
+        lastError = null;
+        permissionDenied = false;
+        return parsed;
       }
       if (first.type === "image") {
+        lastSuccessTs = Date.now();
+        lastError = null;
+        permissionDenied = false;
         return { image: first.data, mimeType: first.mimeType };
       }
       return first;
     }
+    lastSuccessTs = Date.now();
+    lastError = null;
     return result;
   } catch (e) {
-    lastError = `${name} failed: ${e instanceof Error ? e.message : String(e)}`;
+    const msg = e instanceof Error ? e.message : String(e);
+    if (isPermissionError(msg)) {
+      permissionDenied = true;
+      lastError = `Screen Recording permission not granted. Fix: open "${SCREEN_RECORDING_SETTINGS_URL}" — grant permission to Ghost OS, then restart it.`;
+    } else {
+      lastError = `${name} failed: ${msg}`;
+    }
     return null;
   }
 }

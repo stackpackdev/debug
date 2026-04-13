@@ -9,6 +9,7 @@ import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { atomicWrite } from "./utils.js";
+import { getVisualDiagnostic, SCREEN_RECORDING_SETTINGS_URL } from "./ghost-bridge.js";
 function checkNodeVersion() {
     const v = process.versions.node;
     const [major, minor] = v.split(".").map(Number);
@@ -136,12 +137,41 @@ export function formatDoctorReport(caps) {
         fix: caps.perf.chromeAvailable ? undefined : "Install Chrome: https://google.com/chrome",
     });
     // Visual
-    checks.push({
-        group: "visual", name: "Ghost OS",
-        status: caps.visual.ghostOsConfigured ? "pass" : "warn",
-        message: caps.visual.ghostOsConfigured ? "Ghost OS configured" : "Ghost OS not configured",
-        fix: caps.visual.ghostOsConfigured ? undefined : "Add ghost-os MCP server to .mcp.json",
-    });
+    if (caps.visual.ghostOsConfigured) {
+        // Ghost OS is configured — check if Screen Recording permission is granted
+        const diag = getVisualDiagnostic();
+        if (diag.permissionDenied) {
+            checks.push({
+                group: "visual", name: "Ghost OS",
+                status: "warn",
+                message: "Ghost OS configured but Screen Recording permission not granted",
+                fix: `Grant permission: open "${SCREEN_RECORDING_SETTINGS_URL}" — then restart Ghost OS`,
+            });
+        }
+        else if (diag.lastError && /permission/i.test(diag.lastError)) {
+            checks.push({
+                group: "visual", name: "Ghost OS",
+                status: "warn",
+                message: `Ghost OS configured but may need permissions: ${diag.lastError}`,
+                fix: `Check System Settings > Privacy & Security > Screen Recording`,
+            });
+        }
+        else {
+            checks.push({
+                group: "visual", name: "Ghost OS",
+                status: "pass",
+                message: diag.connected ? "Ghost OS configured and connected" : "Ghost OS configured",
+            });
+        }
+    }
+    else {
+        checks.push({
+            group: "visual", name: "Ghost OS",
+            status: "warn",
+            message: "Ghost OS not configured",
+            fix: "Add ghost-os MCP server to .mcp.json",
+        });
+    }
     checks.push({
         group: "visual", name: "Claude Preview",
         status: "pass",
