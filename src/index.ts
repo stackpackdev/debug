@@ -1122,6 +1122,20 @@ async function main(): Promise<void> {
       // MCP server runs in a separate process (via .mcp.json config).
       // Don't start it here — stdio is shared with the child dev server.
 
+      // Show network topology after proxy is set up
+      setTimeout(() => {
+        const servers = detectDevServers();
+        if (servers.length > 0) {
+          const topology = getNetworkTopology(servers[0], cwd);
+          if (topology.outbound.length > 0) {
+            kv("backends", topology.outbound.map((conn) => `${conn.service ?? "unknown"}:${conn.remotePort}`).join(", "));
+          }
+          if (topology.missing && topology.missing.length > 0) {
+            for (const m of topology.missing) warn(`Missing: ${m}`);
+          }
+        }
+      }, 3_000); // Delay to let the dev server start up and establish connections
+
       // Live activity feed — shows MCP tool calls in this terminal
       const activityFeed = startActivityFeed(cwd);
 
