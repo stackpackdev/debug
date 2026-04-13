@@ -875,7 +875,7 @@ async function main() {
         backgroundSelfUpgrade((result) => {
             if (result.upgraded) {
                 process.stderr.write(`\n  ${c.green}${sym.check}${c.reset} ${c.bold}Auto-upgraded:${c.reset} v${result.from} ${sym.arrow} v${result.to}\n`);
-                process.stderr.write(`  ${c.dim}Restart to use the new version.${c.reset}\n\n`);
+                process.stderr.write(`  ${c.dim}Restart Claude Code to pick up the new MCP server version.${c.reset}\n\n`);
                 // Refresh SKILL.md and commands so they match the new version
                 try {
                     initCommand(cwd);
