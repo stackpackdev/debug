@@ -42,6 +42,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.28.0",
+    "@stackpack/loop-protocol": "file:../loop-protocol",
     "http-proxy": "^1.18.1",
     "tree-kill": "^1.2.2",
     "ws": "^8.18.0"
