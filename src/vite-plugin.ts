@@ -61,11 +61,106 @@ function buildInlineScript(wsPort: number): string {
   if (window.__stackpack_debug_injected) return;
   window.__stackpack_debug_injected = true;
 
-  var wsUrl = "ws://127.0.0.1:${wsPort}/__stackpack_debug/ws";
+  var hostPort = "127.0.0.1:${wsPort}";
+  var wsUrl = "ws://" + hostPort + "/__stackpack_debug/ws";
+  var toolkitOrigins = ["ws://" + hostPort, "http://" + hostPort];
   var ws;
   var queue = [];
   var reconnectAttempts = 0;
   var maxReconnects = 5;
+
+  // --- CSP self-diagnosis -------------------------------------------------
+  // If the host page's Content Security Policy blocks our WS/HTTP origin,
+  // the connect() call below fails silently. Listen for the standard
+  // securitypolicyviolation event and render an in-page banner so the user
+  // knows exactly what to add to their CSP.
+  var cspBannerShown = {};
+  function isToolkitBlock(blockedURI) {
+    if (!blockedURI || typeof blockedURI !== "string") return false;
+    if (blockedURI === "inline" || blockedURI === "eval") return false;
+    for (var i = 0; i < toolkitOrigins.length; i++) {
+      if (blockedURI.indexOf(toolkitOrigins[i]) === 0) return true;
+    }
+    return blockedURI.indexOf(hostPort) !== -1;
+  }
+  function renderCspBanner(directive, blockedURI) {
+    var dedupeKey = directive + "|" + blockedURI;
+    if (cspBannerShown[dedupeKey]) return;
+    cspBannerShown[dedupeKey] = true;
+    try {
+      if (sessionStorage.getItem("__stackpack_csp_banner_dismissed") === "1") return;
+    } catch (_) {}
+    if (document.getElementById("__stackpack-csp-banner")) return;
+
+    var snippet = (directive || "connect-src") + " ws://" + hostPort + " http://" + hostPort;
+    var wrap = document.createElement("div");
+    wrap.id = "__stackpack-csp-banner";
+    wrap.setAttribute("style",
+      "position:fixed;left:0;right:0;bottom:0;z-index:2147483647;" +
+      "background:#fff3cd;color:#664d03;border-top:2px solid #ffc107;" +
+      "font:13px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;" +
+      "padding:12px 16px;box-shadow:0 -2px 8px rgba(0,0,0,0.08);"
+    );
+    var heading = document.createElement("div");
+    heading.setAttribute("style", "font-weight:600;margin-bottom:4px;");
+    heading.textContent = "stackpack-debug was blocked by your Content Security Policy.";
+    var detail = document.createElement("div");
+    detail.setAttribute("style", "margin-bottom:6px;");
+    detail.textContent = "Blocked: " + blockedURI + " (directive: " + (directive || "connect-src") + "). Add this to your connect-src directive:";
+    var codeRow = document.createElement("div");
+    codeRow.setAttribute("style", "display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;");
+    var code = document.createElement("code");
+    code.setAttribute("style", "background:#fff;border:1px solid #e0cfa0;padding:4px 8px;border-radius:4px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;user-select:all;");
+    code.textContent = snippet;
+    var copyBtn = document.createElement("button");
+    copyBtn.setAttribute("type", "button");
+    copyBtn.setAttribute("style", "background:#ffc107;color:#664d03;border:none;padding:4px 10px;border-radius:4px;font:inherit;cursor:pointer;");
+    copyBtn.textContent = "Copy";
+    copyBtn.addEventListener("click", function() {
+      try {
+        navigator.clipboard.writeText(snippet);
+        copyBtn.textContent = "Copied ✓";
+        setTimeout(function() { copyBtn.textContent = "Copy"; }, 2000);
+      } catch (_) {}
+    });
+    codeRow.appendChild(code);
+    codeRow.appendChild(copyBtn);
+    var footer = document.createElement("div");
+    footer.setAttribute("style", "display:flex;justify-content:space-between;align-items:center;");
+    var learn = document.createElement("a");
+    learn.setAttribute("href", "https://github.com/stackpackdev/debug#csp");
+    learn.setAttribute("target", "_blank");
+    learn.setAttribute("rel", "noopener");
+    learn.setAttribute("style", "color:#664d03;text-decoration:underline;");
+    learn.textContent = "Learn more";
+    var dismiss = document.createElement("button");
+    dismiss.setAttribute("type", "button");
+    dismiss.setAttribute("aria-label", "Dismiss");
+    dismiss.setAttribute("style", "background:transparent;border:none;color:#664d03;font-size:18px;line-height:1;cursor:pointer;padding:0 4px;");
+    dismiss.textContent = "×";
+    dismiss.addEventListener("click", function() {
+      try { sessionStorage.setItem("__stackpack_csp_banner_dismissed", "1"); } catch (_) {}
+      if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+    });
+    footer.appendChild(learn);
+    footer.appendChild(dismiss);
+    wrap.appendChild(heading);
+    wrap.appendChild(detail);
+    wrap.appendChild(codeRow);
+    wrap.appendChild(footer);
+    if (document.body) {
+      document.body.appendChild(wrap);
+    } else {
+      document.addEventListener("DOMContentLoaded", function() {
+        if (document.body) document.body.appendChild(wrap);
+      }, { once: true });
+    }
+  }
+  document.addEventListener("securitypolicyviolation", function(e) {
+    if (!isToolkitBlock(e.blockedURI)) return;
+    var directive = e.effectiveDirective || e.violatedDirective || "connect-src";
+    renderCspBanner(directive, e.blockedURI);
+  });
 
   function send(type, data) {
     var msg = JSON.stringify({ type: type, data: data, ts: Date.now() });

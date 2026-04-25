@@ -1,6 +1,39 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Bash(npx tsc:*)",
+      "Bash(./node_modules/.bin/tsc)",
+      "Bash(npm install:*)",
+      "Bash(npm publish:*)",
+      "Bash(npm whoami:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(grep -E \"\\\\.\\(ts|tsx\\)$\")",
+      "Bash(ls:*)",
+      "Bash(grep -r \"Capture\\\\|capture\" /Users/parandykt/Apps/stackpack/debug/tests/*.test.ts)",
+      "Bash(cat /Users/parandykt/Apps/stackpack/ship/migrations/*.sql)",
+      "Bash(grep:*)",
+      "Bash(npm list:*)",
+      "Bash(ls -la .git)",
+      "Bash(ls -la ship/.git)",
+      "Bash(ls -la debug/.git)",
+      "mcp__stackpack__status",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code} in %{time_total}s\\\\n\" https://stackpack-platform.fly.dev/)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code} in %{time_total}s\\\\n\" https://stackpack.io/)",
+      "Bash(fly status:*)",
+      "Bash(curl -s -X POST https://stackpack-platform.fly.dev/mcp -H 'Content-Type: application/json' -H 'Accept: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1.0\"}}}')",
+      "Bash(curl -s -X POST https://stackpack-platform.fly.dev/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1.0\"}}}')",
+      "Bash(python3 -m json.tool)",
+      "WebSearch",
+      "Bash(npm token:*)",
+      "Bash(npm config:*)",
+      "Bash(node:*)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "tessl"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }
