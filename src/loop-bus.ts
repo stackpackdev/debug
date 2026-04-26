@@ -1,4 +1,4 @@
-import type { LoopEvent } from '@stackpack/loop-protocol'
+import type { LoopEvent, LoopActor } from '@stackpack/loop-protocol'
 
 export interface LoopBusOptions {
   /** Ring-buffer capacity. Older events are dropped when exceeded. Default 5000. */
@@ -167,4 +167,45 @@ export function renderTimelineResource(opts: { sinceMs?: number; kinds?: string[
     lines.push(`[${e.ts}ms] ${tag} ${e.kind}${actor}${cause}${summaryTail} <id=${e.id}>`)
   }
   return lines.join('\n')
+}
+
+export interface StateContext {
+  recentMutations: LoopEvent[]
+  lastActor: LoopActor | null
+  affectedStores: string[]
+  causalChain: LoopEvent[]
+}
+
+/**
+ * Build a state-context summary for inclusion in debug_investigate responses.
+ * Returns null when the LoopBus has no state events (caller should omit the
+ * stateContext field entirely in that case).
+ */
+export function buildStateContext(opts: {
+  wallTs: number
+  anchorEventId?: string
+  mutationLimit?: number
+}): StateContext | null {
+  // Short-circuit: no state telemetry means no context to return.
+  const hasAnyStateEvent = loopBus.timeline().some(e => e.source === 'state')
+  if (!hasAnyStateEvent) return null
+
+  const limit = opts.mutationLimit ?? 10
+  const allMutations = loopBus.timeline()
+    .filter(e => e.source === 'state' && e.kind === 'mutation' && e.wallTs <= opts.wallTs)
+  const recentMutations = allMutations.slice(-limit)
+  const lastActor = recentMutations.length ? (recentMutations[recentMutations.length - 1].actor ?? null) : null
+
+  const causalChain = opts.anchorEventId ? loopBus.causalChain(opts.anchorEventId) : []
+
+  const stores = new Set<string>()
+  for (const e of recentMutations) if (e.storeName) stores.add(e.storeName)
+  for (const e of causalChain) if (e.storeName) stores.add(e.storeName)
+
+  return {
+    recentMutations,
+    lastActor,
+    affectedStores: Array.from(stores),
+    causalChain,
+  }
 }

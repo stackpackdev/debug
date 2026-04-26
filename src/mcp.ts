@@ -1556,6 +1556,25 @@ Start every debugging session with this tool.`,
       response.nextStep = `⚠ ${loopAnalysis.recommendation}\n\n${response.nextStep ?? ""}`;
     }
 
+    // Splice in state context when state telemetry is active
+    const { buildStateContext } = await import("./loop-bus.js");
+    const stateCtx = buildStateContext({ wallTs: Date.now() });
+    if (stateCtx) {
+      (response as any).stateContext = {
+        recentMutations: stateCtx.recentMutations.map(m => ({
+          id: m.id,
+          ts: m.ts,
+          storeName: m.storeName,
+          actor: m.actor,
+          diff: m.payload,
+          causedBy: m.causedBy,
+        })),
+        lastActor: stateCtx.lastActor,
+        affectedStores: stateCtx.affectedStores,
+        causalChain: stateCtx.causalChain.map(e => ({ id: e.id, kind: e.kind, storeName: e.storeName })),
+      };
+    }
+
     const budgeted = fitToBudget(response, { maxTokens: 4000 });
     return { content: [{ type: "text", text: JSON.stringify(budgeted) }] };
   });
