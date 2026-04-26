@@ -12,8 +12,41 @@ import { WebSocketServer, WebSocket } from "ws";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileIssue } from "./fix-library.js";
-import { decodeWireMessage } from "@stackpack/loop-protocol";
+import { decodeWireMessage, createLoopEvent } from "@stackpack/loop-protocol";
 import { loopBus } from "./loop-bus.js";
+
+export function ingestBrowserMessage(msg: { type: string; data: any; ts: number }): void {
+  if (msg.type === "console") {
+    if (msg.data?.level === "error" || msg.data?.level === "warn") {
+      loopBus.ingest(createLoopEvent({
+        source: "browser",
+        kind: msg.data.level === "error" ? "console.error" : "console.warn",
+        payload: { message: (msg.data.args ?? []).join(" ") },
+      }));
+    }
+    return;
+  }
+  if (msg.type === "error") {
+    loopBus.ingest(createLoopEvent({
+      source: "browser",
+      kind: "window.error",
+      payload: {
+        message: msg.data?.message,
+        source: msg.data?.source,
+        line: msg.data?.line,
+      },
+    }));
+    return;
+  }
+  if (msg.type === "unhandledrejection" || msg.type === "rejection") {
+    loopBus.ingest(createLoopEvent({
+      source: "browser",
+      kind: "unhandled.rejection",
+      payload: { reason: msg.data?.reason ?? msg.data },
+    }));
+    return;
+  }
+}
 
 export interface CaptureEvent {
   type: "error" | "rejection" | "console" | "network" | "terminal" | "agent_chat" | "agent_message" | "editor_change";
@@ -108,8 +141,12 @@ export function startCaptureServer(
           return;
         }
 
-        const event = JSON.parse(String(data)) as CaptureEvent;
+        const raw = JSON.parse(String(data)) as Record<string, unknown>;
+        const event = raw as unknown as CaptureEvent;
         eventCount++;
+
+        // Bridge browser messages into the LoopBus for unified timeline
+        ingestBrowserMessage(raw as { type: string; data: any; ts: number });
 
         // Call the event handler
         if (onEvent) onEvent(event);
