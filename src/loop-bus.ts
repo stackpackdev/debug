@@ -79,3 +79,56 @@ export class LoopBus {
 
 // Singleton instance used by the rest of debug.
 export const loopBus = new LoopBus()
+
+/**
+ * Render a markdown summary of all stores currently visible in the LoopBus,
+ * derived from the event stream. Returns an "empty" message if no state
+ * telemetry has been seen.
+ */
+export function renderStateResource(): string {
+  const all = loopBus.timeline()
+  const byStore = new Map<string, {
+    state?: unknown
+    gates: Record<string, boolean>
+    when: Record<string, boolean>
+    lastActor?: string
+    mutations: number
+  }>()
+
+  for (const e of all) {
+    if (e.source !== 'state' || !e.storeName) continue
+    const cur = byStore.get(e.storeName) ?? { gates: {}, when: {}, mutations: 0 }
+    if (e.kind === 'mutation') {
+      cur.state = (e.payload as any).next
+      cur.mutations += 1
+      if (e.actor) cur.lastActor = `${e.actor.type}:${e.actor.name ?? e.actor.id ?? '?'}`
+    } else if (e.kind === 'gate.flip') {
+      cur.gates[(e.payload as any).gate] = (e.payload as any).to
+    } else if (e.kind === 'when.flip') {
+      cur.when[(e.payload as any).when] = (e.payload as any).to
+    }
+    byStore.set(e.storeName, cur)
+  }
+
+  if (byStore.size === 0) {
+    return '# debug://state\n\nNo state telemetry received yet. Ensure stackpack-state has called `attachTelemetry` or `autoAttach`.'
+  }
+
+  const lines: string[] = ['# debug://state', '']
+  for (const [name, info] of byStore) {
+    lines.push(`## ${name}`)
+    lines.push(`- mutations: ${info.mutations}`)
+    if (info.lastActor) lines.push(`- lastActor: ${info.lastActor}`)
+    lines.push(`- state: ${JSON.stringify(info.state)}`)
+    if (Object.keys(info.gates).length) {
+      const g = Object.entries(info.gates).map(([k, v]) => `${k}: ${v}`).join(', ')
+      lines.push(`- gates: ${g}`)
+    }
+    if (Object.keys(info.when).length) {
+      const w = Object.entries(info.when).map(([k, v]) => `${k}: ${v}`).join(', ')
+      lines.push(`- when: ${w}`)
+    }
+    lines.push('')
+  }
+  return lines.join('\n')
+}

@@ -946,6 +946,23 @@ export function createMcpServer(): McpServer {
     },
   );
 
+  // ━━━ RESOURCE: debug_state ━━━
+  // Snapshot of all stackpack-state stores visible in the LoopBus.
+  server.registerResource(
+    "loop-state",
+    "debug://state",
+    {
+      description: "Snapshot of all stackpack-state stores: current value, gate flips, when flips, last actor.",
+      mimeType: "text/markdown",
+    },
+    async () => {
+      const { renderStateResource } = await import("./loop-bus.js");
+      return {
+        contents: [{ uri: "debug://state", mimeType: "text/markdown", text: renderStateResource() }],
+      };
+    },
+  );
+
   // ━━━ TOOL 1: debug_investigate ━━━
   // The killer feature. One call: error in, full context out.
   server.registerTool("debug_investigate", {
