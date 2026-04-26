@@ -209,3 +209,34 @@ export function buildStateContext(opts: {
     causalChain,
   }
 }
+
+/**
+ * Render detector warnings (gate.flicker, effect.cascade, presence.leak)
+ * as a small markdown section, suitable for splicing into debug://status
+ * or debug://errors. Returns an empty string when there are no warnings.
+ */
+export function renderDetectorWarnings(): string {
+  const warnings = loopBus.timeline().filter(e =>
+    e.source === 'debug' && (
+      e.kind === 'gate.flicker' ||
+      e.kind === 'effect.cascade' ||
+      e.kind === 'presence.leak'
+    )
+  )
+  if (warnings.length === 0) return ''
+
+  const lines: string[] = ['## Loop detectors', '']
+  for (const w of warnings) {
+    if (w.kind === 'gate.flicker') {
+      const p = w.payload as any
+      lines.push(`- gate.flicker — ${w.storeName}/${p.gate}: ${p.count} flips in ${p.windowMs}ms`)
+    } else if (w.kind === 'effect.cascade') {
+      const p = w.payload as any
+      lines.push(`- effect.cascade — depth ${p.depth}`)
+    } else if (w.kind === 'presence.leak') {
+      const p = w.payload as any
+      lines.push(`- presence.leak — ${w.storeName} item ${p.id} (path: ${p.path}) stuck for ${p.stuckMs}ms`)
+    }
+  }
+  return lines.join('\n')
+}

@@ -323,6 +323,9 @@ async function buildLiveStatus(cwd: string, since?: { timestamp: string; termina
       appendSessions(sections, cwd);
       appendLoopWarning(sections, cwd);
       appendUpdateNotice(sections);
+      const { renderDetectorWarnings: rdw1 } = await import("./loop-bus.js");
+      const dw1 = rdw1();
+      if (dw1) sections.push("\n" + dw1);
       return sections.join("\n");
     }
   }
@@ -377,6 +380,9 @@ async function buildLiveStatus(cwd: string, since?: { timestamp: string; termina
     appendTauriLogs(sections, cwd);
     appendSessions(sections, cwd);
     appendLoopWarning(sections, cwd);
+    const { renderDetectorWarnings: rdw2 } = await import("./loop-bus.js");
+    const dw2 = rdw2();
+    if (dw2) sections.push("\n" + dw2);
     return sections.join("\n");
   }
 
@@ -707,6 +713,9 @@ async function buildLiveStatus(cwd: string, since?: { timestamp: string; termina
   appendSessions(sections, cwd);
   appendLoopWarning(sections, cwd);
   appendUpdateNotice(sections);
+  const { renderDetectorWarnings: rdw3 } = await import("./loop-bus.js");
+  const dw3 = rdw3();
+  if (dw3) sections.push("\n" + dw3);
 
   return sections.join("\n");
 }
@@ -939,6 +948,10 @@ export function createMcpServer(): McpServer {
         lines.push("");
         lines.push(`**${totalErrors} total error(s)/warning(s).**`);
       }
+
+      const { renderDetectorWarnings } = await import("./loop-bus.js");
+      const detectorSection = renderDetectorWarnings();
+      if (detectorSection) lines.push("\n" + detectorSection);
 
       return {
         contents: [{ uri: "debug://errors", mimeType: "text/markdown", text: lines.join("\n") }],
@@ -2748,6 +2761,12 @@ export async function startMcpServer(): Promise<void> {
   // Clean shutdown
   process.on("SIGINT", async () => { await disconnectGhostOs(); process.exit(0); });
   process.on("SIGTERM", async () => { await disconnectGhostOs(); process.exit(0); });
+
+  // Attach detectors to the singleton bus. Warnings re-enter the bus so they
+  // appear in debug://timeline and renderDetectorWarnings().
+  const { startDetectors } = await import("./loop-detectors.js");
+  const { loopBus } = await import("./loop-bus.js");
+  startDetectors(loopBus, w => loopBus.ingest(w));
 
   const server = createMcpServer();
   const transport = new StdioServerTransport();
