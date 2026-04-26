@@ -4,6 +4,7 @@ import { createLoopEvent, type LoopEvent } from "@stackpack/loop-protocol";
 const FLICKER_WINDOW_MS = 500;
 const FLICKER_THRESHOLD = 3;
 const CASCADE_DEPTH_LIMIT = 5;
+const PRESENCE_LEAK_MS = 5_000;
 
 interface FlickerState {
   flips: number[];
@@ -19,8 +20,9 @@ interface FlickerState {
  */
 export function startDetectors(bus: LoopBus, emit: (warning: LoopEvent) => void): () => void {
   const gateFlips = new Map<string, FlickerState>(); // key: storeName/gate
+  const presenceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  return bus.on(ev => {
+  const unsub = bus.on(ev => {
     // Gate flicker — same gate flipped 3+ times within FLICKER_WINDOW_MS.
     if (ev.kind === "gate.flip") {
       const key = `${ev.storeName}/${(ev.payload as any).gate}`;
@@ -66,5 +68,39 @@ export function startDetectors(bus: LoopBus, emit: (warning: LoopEvent) => void)
         }
       }
     }
+
+    // Presence leak — item that entered 'leaving' but was never re-added or fully removed within PRESENCE_LEAK_MS.
+    if (ev.kind === "presence.leave") {
+      const key = `${ev.storeName}/${(ev.payload as any).path}/${(ev.payload as any).id}`;
+      // If a previous leave-timer for this key is pending, cancel it (latest leave wins).
+      const prev = presenceTimers.get(key);
+      if (prev) clearTimeout(prev);
+      const timer = setTimeout(() => {
+        emit(createLoopEvent({
+          source: "debug",
+          kind: "presence.leak",
+          storeName: ev.storeName,
+          causedBy: ev.id,
+          payload: {
+            path: (ev.payload as any).path,
+            id: (ev.payload as any).id,
+            stuckMs: PRESENCE_LEAK_MS,
+          },
+        }));
+        presenceTimers.delete(key);
+      }, PRESENCE_LEAK_MS);
+      presenceTimers.set(key, timer);
+    }
+    if (ev.kind === "presence.enter") {
+      const key = `${ev.storeName}/${(ev.payload as any).path}/${(ev.payload as any).id}`;
+      const t = presenceTimers.get(key);
+      if (t) { clearTimeout(t); presenceTimers.delete(key); }
+    }
   });
+
+  return () => {
+    unsub();
+    for (const t of presenceTimers.values()) clearTimeout(t);
+    presenceTimers.clear();
+  };
 }

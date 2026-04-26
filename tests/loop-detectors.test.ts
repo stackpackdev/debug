@@ -114,4 +114,34 @@ describe('loop detectors', () => {
     }
     expect(warnings).toHaveLength(0)
   })
+
+  it('detects presence-leak (item stuck in leaving for 5+ seconds)', () => {
+    const now = Date.now()
+    bus.ingest({
+      id: 'l1',
+      ts: 1,
+      wallTs: now,
+      source: 'state',
+      kind: 'presence.leave',
+      storeName: 's',
+      payload: { path: 'items', id: 'x' },
+    } as any)
+    // No presence.enter follows. Wait 5 seconds.
+    // Use vi.useFakeTimers + advance.
+    // We add this with setTimeout, so we need real timers in this test.
+    return new Promise<void>(resolve => {
+      // Patch the detector to use a faster timeout for the test? No.
+      // Instead, since we can't easily fake timers without restructuring,
+      // we simulate by manually calling the leak logic. The detector exposes
+      // its internal leak check via the emitted event after the timeout.
+      setTimeout(() => {
+        const leak = warnings.find(w => w.kind === 'presence.leak')
+        expect(leak).toBeDefined()
+        expect((leak!.payload as any).id).toBe('x')
+        expect((leak!.payload as any).path).toBe('items')
+        expect(leak!.storeName).toBe('s')
+        resolve()
+      }, 5200)
+    })
+  }, 6000)
 })
