@@ -12,6 +12,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileIssue } from "./fix-library.js";
+import { decodeWireMessage } from "@stackpack/loop-protocol";
+import { loopBus } from "./loop-bus.js";
 
 export interface CaptureEvent {
   type: "error" | "rejection" | "console" | "network" | "terminal" | "agent_chat" | "agent_message" | "editor_change";
@@ -98,6 +100,14 @@ export function startCaptureServer(
   wss.on("connection", (ws: WebSocket) => {
     ws.on("message", (data: Buffer | string) => {
       try {
+        const loop = decodeWireMessage(String(data));
+        if (loop) {
+          if (loop.type === "loop:event") loopBus.ingest(loop.event);
+          // hello and schema messages are consumed silently for now;
+          // later tasks may extend behavior.
+          return;
+        }
+
         const event = JSON.parse(String(data)) as CaptureEvent;
         eventCount++;
 
