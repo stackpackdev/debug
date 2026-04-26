@@ -132,3 +132,39 @@ export function renderStateResource(): string {
   }
   return lines.join('\n')
 }
+
+function truncate(s: string, max = 120): string {
+  return s.length <= max ? s : s.slice(0, max) + '…'
+}
+
+function summarisePayload(kind: string, payload: unknown): string {
+  if (!payload || typeof payload !== 'object') return ''
+  const p = payload as any
+  if (kind === 'mutation') return `next=${truncate(JSON.stringify(p.next))}`
+  if (kind === 'gate.flip') return `${p.gate}: ${p.from}→${p.to}`
+  if (kind === 'when.flip') return `${p.when}: ${p.from}→${p.to}`
+  if (kind === 'console.error' || kind === 'console.warn') return truncate(String(p.message ?? ''))
+  if (kind === 'window.error') return truncate(String(p.message ?? ''))
+  if (kind === 'unhandled.rejection') return truncate(String(p.reason ?? ''))
+  return truncate(JSON.stringify(p))
+}
+
+/**
+ * Render the LoopBus event stream as markdown — interleaving state, browser,
+ * terminal, and other source events in chronological order with causal links.
+ */
+export function renderTimelineResource(opts: { sinceMs?: number; kinds?: string[]; storeName?: string }): string {
+  const events = loopBus.timeline(opts)
+  if (events.length === 0) return '# debug://timeline\n\n(empty — no events captured)'
+
+  const lines: string[] = ['# debug://timeline', '']
+  for (const e of events) {
+    const tag = e.storeName ? `${e.source}/${e.storeName}` : e.source
+    const actor = e.actor ? ` by ${e.actor.type}:${e.actor.name ?? e.actor.id ?? '?'}` : ''
+    const cause = e.causedBy ? ` (caused by: ${e.causedBy})` : ''
+    const summary = summarisePayload(e.kind, e.payload)
+    const summaryTail = summary ? ' ' + summary : ''
+    lines.push(`[${e.ts}ms] ${tag} ${e.kind}${actor}${cause}${summaryTail} <id=${e.id}>`)
+  }
+  return lines.join('\n')
+}

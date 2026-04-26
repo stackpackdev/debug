@@ -963,6 +963,23 @@ export function createMcpServer(): McpServer {
     },
   );
 
+  // ━━━ RESOURCE: debug_timeline ━━━
+  // Causally-linked event timeline from the LoopBus.
+  server.registerResource(
+    "loop-timeline",
+    "debug://timeline",
+    {
+      description: "Causally-linked event timeline: state mutations, gate/when flips, console errors, network calls.",
+      mimeType: "text/markdown",
+    },
+    async () => {
+      const { renderTimelineResource } = await import("./loop-bus.js");
+      return {
+        contents: [{ uri: "debug://timeline", mimeType: "text/markdown", text: renderTimelineResource({ sinceMs: 60_000 }) }],
+      };
+    },
+  );
+
   // ━━━ TOOL 1: debug_investigate ━━━
   // The killer feature. One call: error in, full context out.
   server.registerTool("debug_investigate", {
