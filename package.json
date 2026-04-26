@@ -51,6 +51,7 @@
     "@types/http-proxy": "^1.17.16",
     "@types/node": "^22.13.0",
     "@types/ws": "^8.5.14",
+    "stackpack-state": "file:../state",
     "typescript": "^5.7.0",
     "vitest": "^4.1.1"
   }
