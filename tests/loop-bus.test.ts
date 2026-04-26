@@ -43,4 +43,14 @@ describe('LoopBus', () => {
     bus.ingest({ id: 'c', ts: 3, wallTs: 3, source: 'state', kind: 'mutation', payload: {} } as any)
     expect(seen).toEqual(['a', 'b'])
   })
+
+  it('clear() empties events and byId', () => {
+    bus.ingest({ id: 'a', ts: 1, wallTs: 1, source: 'state', kind: 'mutation', payload: {} } as any)
+    bus.ingest({ id: 'b', ts: 2, wallTs: 2, source: 'state', kind: 'mutation', payload: {} } as any)
+    expect(bus.timeline()).toHaveLength(2)
+    bus.clear()
+    expect(bus.timeline()).toHaveLength(0)
+    expect(bus.byEventId('a')).toBeUndefined()
+    expect(bus.byEventId('b')).toBeUndefined()
+  })
 })

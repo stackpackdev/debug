@@ -69,6 +69,12 @@ export class LoopBus {
     this.listeners.add(fn)
     return () => this.listeners.delete(fn)
   }
+
+  /** Empty the bus — drops all stored events. Listeners are NOT detached. */
+  clear(): void {
+    this.events = []
+    this.byId.clear()
+  }
 }
 
 // Singleton instance used by the rest of debug.
