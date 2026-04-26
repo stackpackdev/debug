@@ -199,3 +199,40 @@ The toolkit detects running dev servers and maps their network connections autom
 6. For visual bugs, pass suspect file paths in `files` AND use `debug_visual`.
 7. **ALWAYS run `debug_verify` before claiming a fix works.**
 8. Pass `sessionId` from `debug_investigate` to all subsequent calls.
+
+## The Loop — state-aware debugging
+
+When stackpack-state is connected (via `attachTelemetry` or `autoAttach`), debug receives:
+
+- Every mutation, with prev/next diffs and actor attribution.
+- Every gate flip and `when` condition flip.
+- Presence enter/leave events.
+- Causal links via the `causedBy` field — debug walks chains of cause-and-effect, not just a flat log.
+
+This unlocks:
+
+- `debug://state` — current state of every store: latest `next`, all gates, all when conditions, last actor.
+- `debug://timeline` — interleaved state events with terminal/console/network signals, in chronological order with causal links visible.
+- `debug_investigate` — automatically includes `recentMutations`, `lastActor`, `affectedStores`, and the `causalChain` when state telemetry is active.
+- Background detectors:
+  - `gate.flicker` — three flips of the same gate within 500ms.
+  - `presence.leak` — item left a tracked array but never re-entered or fully removed within 5 seconds.
+  - `effect.cascade` — chain of more than 5 effect-driven mutations linked by `causedBy`.
+
+Detector warnings appear in `debug://status` and `debug://errors` whenever they fire, and also flow into `debug://timeline`.
+
+### Enabling in dev
+
+In a Vite-based project, add to `vite.config.ts`:
+
+```ts
+import { stackpackDebug } from 'stackpack-debug/vite-plugin'
+
+export default {
+  plugins: [
+    stackpackDebug({ stateTelemetry: true }),
+  ],
+}
+```
+
+Or call `autoAttach()` directly in your app entry — see the stackpack-state SKILL.md for the alternative.
