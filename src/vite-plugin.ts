@@ -19,7 +19,12 @@ export interface DebugToolkitPluginOptions {
   wsPort?: number;
   /** Disable in production builds. Default: true (only active in dev) */
   devOnly?: boolean;
+  /** When true, inject an import() that calls stackpack-state's autoAttach() during dev. */
+  stateTelemetry?: boolean;
 }
+
+/** Alias for DebugToolkitPluginOptions */
+export type StackpackDebugOptions = DebugToolkitPluginOptions;
 
 export default function debugToolkitPlugin(opts: DebugToolkitPluginOptions = {}): Plugin {
   const devOnly = opts.devOnly ?? true;
@@ -39,20 +44,34 @@ export default function debugToolkitPlugin(opts: DebugToolkitPluginOptions = {})
       }
     },
 
-    transformIndexHtml() {
+    transformIndexHtml(html: string) {
       // Inline the capture script — connects back to toolkit's WebSocket
       const script = buildInlineScript(wsPort);
-      return [
+      const tags = [
         {
-          tag: "script",
+          tag: "script" as const,
           attrs: { "data-stackpack-debug": "true" },
           children: script,
-          injectTo: "body",
+          injectTo: "body" as const,
         },
       ];
+
+      if (opts.stateTelemetry) {
+        const inject =
+          `<script type="module">\n  import('stackpack-state/telemetry').then(m => m.autoAttach()).catch(() => {});\n</script>`;
+        const injectedHtml = html.includes("</body>")
+          ? html.replace("</body>", `${inject}\n</body>`)
+          : html + inject;
+        return { html: injectedHtml, tags };
+      }
+
+      return tags;
     },
   };
 }
+
+/** Named export alias — preferred for new consumers */
+export { debugToolkitPlugin as stackpackDebug };
 
 function buildInlineScript(wsPort: number): string {
   return `
