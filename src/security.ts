@@ -85,8 +85,13 @@ const REDACTION_PATTERNS: Array<[RegExp, string]> = [
   [/(?:password|passwd|secret|api_key|apikey|access_token|private_key|credentials?)[\s=:]+["']?[^\s"']{8,}["']?/gi, "[REDACTED_SECRET]"],
   // AWS keys
   [/(?:AKIA|ABIA|ACCA|ASIA)[A-Z0-9]{16}/g, "[REDACTED_AWS_KEY]"],
-  // Connection strings with credentials
-  [/(?:postgres|mysql|mongodb|redis):\/\/[^:]+:[^@]+@/gi, "[REDACTED_CONNECTION_STRING]://***@"],
+  // Any URL with embedded user:password credentials (scheme-agnostic).
+  // Covers postgres://, postgresql://, mongodb+srv://, https://user:pass@, etc.
+  // We redact the entire URL up to the host since the host itself can be sensitive
+  // (e.g. a Neon endpoint id), leaving only the scheme.
+  [/([a-z][a-z0-9+.\-]*):\/\/[^\s/:@"']+:[^\s/@"']+@\S+/gi, "$1://[REDACTED_CONNECTION_STRING]"],
+  // Secrets carried in URL query parameters (token=, api_key=, access_token=, key=, password=)
+  [/([?&](?:token|api_key|apikey|access_token|auth|key|secret|password|pwd)=)[^\s&"']+/gi, "$1[REDACTED]"],
   // GitHub tokens
   [/gh[pousr]_[A-Za-z0-9_]{36,}/g, "[REDACTED_GITHUB_TOKEN]"],
   // npm tokens
@@ -104,6 +109,23 @@ export function redactSensitiveData(text: string): string {
     result = result.replace(pattern, replacement);
   }
   return result;
+}
+
+/**
+ * Deep-redact a captured value before it is surfaced to the agent. Walks
+ * strings, arrays, and plain objects, applying redactSensitiveData to every
+ * string. Used at the emit points of debug_capture / debug://errors so raw
+ * browser/terminal capture `data` cannot carry secrets through.
+ */
+export function redactCaptureValue<T>(value: T): T {
+  if (typeof value === "string") return redactSensitiveData(value) as unknown as T;
+  if (Array.isArray(value)) return value.map(redactCaptureValue) as unknown as T;
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) out[k] = redactCaptureValue(v);
+    return out as unknown as T;
+  }
+  return value;
 }
 
 /**

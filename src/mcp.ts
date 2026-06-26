@@ -23,7 +23,7 @@ import { instrumentFile } from "./instrument.js";
 import { cleanupSession } from "./cleanup.js";
 import { drainCaptures, runAndCapture, getRecentCaptures, readTauriLogs, discoverTauriLogs, drainBuildErrors, peekRecentOutput, peekRecentWindow, readLiveContext, setLighthouseRunning, waitForNewOutput, extractFilePathsFromError, getTrackedProcesses, readConfigState, type LiveContext, type RuntimeError } from "./capture.js";
 import { investigate, isVisualError, unwrapErrorChain, classifyError, detectProviderMismatch } from "./context.js";
-import { validateCommand } from "./security.js";
+import { validateCommand, redactSensitiveData, redactCaptureValue } from "./security.js";
 import { remember, recall, markUsed, memoryStats, detectPatterns, maybeArchive, type CausalLink } from "./memory.js";
 import { getCachedTopology, type NetworkTopology } from "./network.js";
 import { triageError } from "./triage.js";
@@ -197,16 +197,16 @@ function collapseReactNoise(msg: string): string {
 
 function extractBrowserMessage(b: { timestamp: string; source: string; data: unknown }): string {
   const d = typeof b.data === "object" && b.data !== null ? b.data as Record<string, unknown> : null;
-  if (d?.args) return (d.args as string[]).join(" ");
-  if (d?.url) return `${d.method ?? "GET"} ${d.url} → ${d.status ?? d.error}`;
-  if (d?.message) return String(d.message);
-  return JSON.stringify(d ?? b.data);
+  if (d?.args) return redactSensitiveData((d.args as string[]).join(" "));
+  if (d?.url) return redactSensitiveData(`${d.method ?? "GET"} ${d.url} → ${d.status ?? d.error}`);
+  if (d?.message) return redactSensitiveData(String(d.message));
+  return redactSensitiveData(JSON.stringify(d ?? b.data));
 }
 
 function formatBrowserEvent(b: { timestamp: string; source: string; data: unknown }, severity?: string): string {
   const d = typeof b.data === "object" && b.data !== null ? b.data as Record<string, unknown> : null;
   const icon = severity ? (SEVERITY_ICON[severity] ?? "") + " " : "";
-  if (d?.url) return `${icon}[network] ${d.method ?? "GET"} ${d.url} → ${d.status ?? d.error}`;
+  if (d?.url) return redactSensitiveData(`${icon}[network] ${d.method ?? "GET"} ${d.url} → ${d.status ?? d.error}`);
   const level = d?.level ?? d?.type ?? b.source;
   const msg = collapseReactNoise(extractBrowserMessage(b));
   return `${icon}[${level}] ${msg}`;
@@ -596,7 +596,7 @@ async function buildLiveStatus(cwd: string, since?: { timestamp: string; termina
         const deduped = new Map<string, { method: string; url: string; status: number | string; count: number }>();
         for (const b of networkEvents.slice(-20)) {
           const d = typeof b.data === "object" && b.data !== null ? b.data as Record<string, unknown> : null;
-          const url = String(d?.url ?? "");
+          const url = redactSensitiveData(String(d?.url ?? ""));
           const method = String(d?.method ?? "GET");
           const status = d?.status ?? d?.error ?? "?";
           const key = `${method} ${url} ${status}`;
@@ -1217,7 +1217,7 @@ Avoid passing truncated console snippets like "Error in %s" or strings containin
     const browserNetworkEvents = recentOutput.browser
       .filter(c => c.source === "browser-network")
       .map(c => c.data as Record<string, unknown>)
-      .map(d => ({ url: d?.url as string | undefined, status: d?.status as number | undefined, method: d?.method as string | undefined, ok: d?.ok as boolean | undefined }));
+      .map(d => ({ url: d?.url ? redactSensitiveData(String(d.url)) : undefined, status: d?.status as number | undefined, method: d?.method as string | undefined, ok: d?.ok as boolean | undefined }));
     const providerMismatch = detectProviderMismatch(errorChain, browserNetworkEvents, errorText);
 
     const response: Record<string, unknown> = {
@@ -1859,8 +1859,8 @@ When running commands against localhost, server-side logs from the request windo
         mode: "recent-window",
         windowMs,
         total: filtered.length,
-        output: filtered.slice(-(limit ?? 30)).map((c) => ({ source: c.source, data: c.data })),
-        errors: errors.slice(0, 10).map((c) => (c.data as Record<string, string>)?.text),
+        output: filtered.slice(-(limit ?? 30)).map((c) => ({ source: c.source, data: redactCaptureValue(c.data) })),
+        errors: errors.slice(0, 10).map((c) => redactSensitiveData((c.data as Record<string, string>)?.text ?? "")),
         nextStep: filtered.length === 0
           ? `No output in the last ${Math.round(windowMs / 1000)}s. The server may not be producing output.`
           : errors.length > 0
@@ -1894,8 +1894,8 @@ When running commands against localhost, server-side logs from the request windo
       return text({
         waited: true, waitedMs: result.waitedMs, timedOut: false,
         total: filtered.length,
-        output: filtered.slice(0, 30).map((c) => ({ source: c.source, data: c.data })),
-        errors: errors.slice(0, 10).map((c) => (c.data as Record<string, string>)?.text),
+        output: filtered.slice(0, 30).map((c) => ({ source: c.source, data: redactCaptureValue(c.data) })),
+        errors: errors.slice(0, 10).map((c) => redactSensitiveData((c.data as Record<string, string>)?.text ?? "")),
         nextStep: errors.length > 0
           ? "New errors arrived. Use debug_investigate with the error text for full context."
           : `${filtered.length} new line(s) captured.`,
@@ -1946,9 +1946,9 @@ When running commands against localhost, server-side logs from the request windo
       return text({
         sessionId: session.id,
         total: recent.total, showing: filtered.length,
-        tagged: tagged.map((c) => ({ tag: c.markerTag, hypothesis: c.hypothesisId, data: c.data })),
-        errors: errors.slice(0, 10).map((c) => (c.data as Record<string, string>)?.text),
-        output: filtered.slice(0, 15).map((c) => ({ source: c.source, data: c.data })),
+        tagged: tagged.map((c) => ({ tag: c.markerTag, hypothesis: c.hypothesisId, data: redactCaptureValue(c.data) })),
+        errors: errors.slice(0, 10).map((c) => redactSensitiveData((c.data as Record<string, string>)?.text ?? "")),
+        output: filtered.slice(0, 15).map((c) => ({ source: c.source, data: redactCaptureValue(c.data) })),
         serverLogs: serverLogs && serverLogs.length > 0 ? serverLogs.slice(0, 20) : undefined,
         nextStep: errors.length > 0
           ? "Errors detected. Use debug_investigate with the error text for full context."
@@ -1974,7 +1974,7 @@ When running commands against localhost, server-side logs from the request windo
     logActivity({ tool: "debug_capture", ts: Date.now(), summary: "peeked buffers (no session)", metrics: { total: filtered.length, errors: errors.length } });
     return text({
       total: filtered.length,
-      output: filtered.slice(0, 30).map((c) => ({ source: c.source, data: c.data })),
+      output: filtered.slice(0, 30).map((c) => ({ source: c.source, data: redactCaptureValue(c.data) })),
       errors: errors.slice(0, 10).map((c) => (c.data as Record<string, string>)?.text),
       nextStep: errors.length > 0
         ? "Errors detected. Use debug_investigate with the error text for full context."
@@ -2124,8 +2124,8 @@ Use this before cleanup to confirm the fix actually works.`,
       passed,
       exitCode,
       errorCount: errors.length,
-      errors: errors.slice(0, 5).map((c) => (c.data as Record<string, string>)?.text),
-      output: captures.slice(0, 10).map((c) => (c.data as Record<string, string>)?.text),
+      errors: errors.slice(0, 5).map((c) => redactSensitiveData((c.data as Record<string, string>)?.text ?? "")),
+      output: captures.slice(0, 10).map((c) => redactSensitiveData((c.data as Record<string, string>)?.text ?? "")),
       nextStep: passed
         ? "Fix verified and auto-saved to memory! Use debug_cleanup to remove instrumentation (optional — diagnosis already recorded)."
         : "Fix failed. Review the errors above and try a different approach.",
@@ -2809,7 +2809,7 @@ Lightweight — returns a summary, not the full capture history.`,
         tag: i.markerTag, file: basename(i.filePath), line: i.lineNumber, hypothesis: i.hypothesisId,
       })),
       recentCaptures: recent.showing > 0
-        ? { count: recent.total, recent: recent.captures.slice(0, 5).map((c) => ({ source: c.source, tag: c.markerTag, data: c.data })) }
+        ? { count: recent.total, recent: recent.captures.slice(0, 5).map((c) => ({ source: c.source, tag: c.markerTag, data: redactCaptureValue(c.data) })) }
         : null,
       diagnosis: session.diagnosis,
     });
