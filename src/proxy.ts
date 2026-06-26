@@ -6,6 +6,12 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { onBrowserEvent } from "./capture.js";
 import { createGunzip } from "node:zlib";
+import {
+  decodeWireMessage,
+  encodeWireMessage,
+  createLoopEvent,
+} from "@stackpack/loop-protocol";
+import { startLoopForwarder, type LoopForwarder } from "./loop-forwarder.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -22,12 +28,16 @@ function getInjectedScript(): string {
 export interface ProxyOptions {
   targetPort: number;
   listenPort: number;
+  /** Working directory used to find .debug/mcp.endpoint.json. Defaults to process.cwd(). */
+  cwd?: string;
 }
 
 export function startProxy(opts: ProxyOptions): {
   close: () => void;
 } {
   const { targetPort, listenPort } = opts;
+  const cwd = opts.cwd ?? process.cwd();
+  const forwarder: LoopForwarder = startLoopForwarder(cwd);
   const target = `http://127.0.0.1:${targetPort}`;
 
   const proxy = httpProxy.createProxyServer({
@@ -121,9 +131,27 @@ export function startProxy(opts: ProxyOptions): {
 
   wss.on("connection", (ws: WebSocket) => {
     ws.on("message", (data) => {
+      const raw = data.toString();
+
+      // First: try as a Loop wire message (state telemetry, or wrapped events).
+      // On hit, forward upstream to MCP and stop — these are not browser events.
+      const wire = decodeWireMessage(raw);
+      if (wire) {
+        forwarder.send(raw);
+        return;
+      }
+
+      // Otherwise: existing browser-event path (console/error/network).
       try {
-        const event = JSON.parse(data.toString());
+        const event = JSON.parse(raw);
         onBrowserEvent(event);
+        // Also surface browser events on the unified timeline by wrapping
+        // them as loop:event messages and forwarding upstream. Keeps
+        // debug://timeline a true cross-source view.
+        const loopEv = browserEventToLoopEvent(event);
+        if (loopEv) {
+          forwarder.send(encodeWireMessage({ type: "loop:event", event: loopEv }));
+        }
       } catch {
         // Ignore malformed messages
       }
@@ -150,11 +178,62 @@ export function startProxy(opts: ProxyOptions): {
 
   return {
     close() {
+      forwarder.close();
       wss.close();
       server.close();
       proxy.close();
     },
   };
+}
+
+/**
+ * Map a browser-injected event ({type, data, ts}) to a LoopEvent for
+ * upstream forwarding. Returns null for events that don't belong on the
+ * timeline (e.g. successful network calls).
+ */
+function browserEventToLoopEvent(event: { type?: string; data?: any; ts?: number }) {
+  if (!event || typeof event !== "object") return null;
+  const data = event.data ?? {};
+
+  if (event.type === "console") {
+    if (data.level !== "error" && data.level !== "warn") return null;
+    return createLoopEvent({
+      source: "browser",
+      kind: data.level === "error" ? "console.error" : "console.warn",
+      payload: { message: Array.isArray(data.args) ? data.args.join(" ") : String(data.args ?? "") },
+    });
+  }
+  if (event.type === "error") {
+    if (data.type === "unhandledrejection") {
+      return createLoopEvent({
+        source: "browser",
+        kind: "unhandled.rejection",
+        payload: { reason: data.message ?? data.reason ?? "" },
+      });
+    }
+    return createLoopEvent({
+      source: "browser",
+      kind: "window.error",
+      payload: {
+        message: data.message,
+        source: data.source,
+        line: data.line,
+      },
+    });
+  }
+  if (event.type === "network") {
+    return createLoopEvent({
+      source: "network",
+      kind: "request.failed",
+      payload: {
+        method: data.method,
+        url: data.url,
+        status: data.status,
+        error: data.error,
+      },
+    });
+  }
+  return null;
 }
 
 /**

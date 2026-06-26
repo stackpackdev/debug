@@ -151,8 +151,24 @@ export function startCaptureServer(
         // Call the event handler
         if (onEvent) onEvent(event);
 
-        // Buffer for live-context
-        const text = event.message ?? event.args ?? event.reason ?? event.text ?? event.error ?? "unknown";
+        // Buffer for live-context. For browser console events, the resolved
+        // text lives in event.data.args (an array of stringified args). The
+        // older flat fields (event.message, event.text, etc.) are kept as
+        // fallbacks for non-console event shapes.
+        const eventData = (raw as any).data;
+        let text: string = "unknown";
+        if (event.type === "console" && eventData && Array.isArray(eventData.args)) {
+          text = eventData.args.map((a: unknown) => String(a)).join(" ");
+        } else if (event.type === "error" && eventData && typeof eventData === "object") {
+          text = eventData.message ?? eventData.reason ?? JSON.stringify(eventData);
+        } else {
+          text = event.message
+            ?? (typeof event.args === "string" ? event.args : undefined)
+            ?? event.reason
+            ?? event.text
+            ?? event.error
+            ?? "unknown";
+        }
         recentErrors.push({
           timestamp: new Date(event.ts ?? Date.now()).toISOString(),
           text: `[${event.type}] ${text}`.slice(0, 500),

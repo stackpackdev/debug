@@ -146,18 +146,30 @@ function analyze(cwd: string): WatcherAlert[] {
     for (const [sig, count] of sigCounts) {
       if (count >= 4) {
         // Same error appearing in 4+ snapshots — but only alert as "loop" if
-        // the error disappeared and came back (actual loop), not if it was always there
-        const errorText = recent[recent.length - 1].terminalErrors[0]
-          ?? recent[recent.length - 1].browserErrors[0]
-          ?? recent[recent.length - 1].buildErrors[0]?.message
-          ?? "unknown error";
+        // the error disappeared and came back (actual loop), not if it was always there.
+        // Pick the longest available representation so the agent gets the
+        // resolved identifier even when one source has a truncated/placeholder
+        // form (e.g. "Error in %s" with the substituted name in another).
+        const last = recent[recent.length - 1];
+        const candidates = [
+          last.terminalErrors[0],
+          last.browserErrors[0],
+          last.buildErrors[0]?.message,
+        ].filter((s): s is string => typeof s === "string" && s.length > 0);
+        const errorText = candidates.length > 0
+          ? candidates.reduce((a, b) => (b.length > a.length ? b : a))
+          : "unknown error";
+
+        // Surface up to 200 chars (was 100) — enough to keep component names
+        // and file:line tails intact in the LOOP message.
+        const summary = errorText.slice(0, 200);
 
         const isActualLoop = sigEverAbsent.get(sig) === true; // error disappeared then came back
         if (isActualLoop) {
           alerts.push({
             type: "loop",
             severity: count >= 5 ? "critical" : "warning",
-            message: `Same error recurring across ${count} checks: ${errorText.slice(0, 100)}`,
+            message: `Same error recurring across ${count} checks: ${summary}`,
             suggestion: "This error keeps coming back after fix attempts. Try a different strategy.",
           });
         } else {
@@ -165,7 +177,7 @@ function analyze(cwd: string): WatcherAlert[] {
           alerts.push({
             type: "loop",
             severity: "warning",
-            message: `Persistent error across ${count} checks: ${errorText.slice(0, 100)}`,
+            message: `Persistent error across ${count} checks: ${summary}`,
             suggestion: "This error has been present since monitoring started. It may be a pre-existing issue.",
           });
         }

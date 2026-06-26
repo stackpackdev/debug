@@ -13,6 +13,8 @@
  */
 
 import type { Plugin } from "vite";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 export interface DebugToolkitPluginOptions {
   /** Port the stackpack-debug proxy WebSocket listens on. Default: auto-detect from env or 2420 */
@@ -57,8 +59,14 @@ export default function debugToolkitPlugin(opts: DebugToolkitPluginOptions = {})
       ];
 
       if (opts.stateTelemetry) {
+        // If an MCP loop server is running, point state directly at it so
+        // events flow even when the proxy isn't in use. The endpoint file
+        // is project-local — read at HTML-transform time so a restarted MCP
+        // is picked up by the next page reload.
+        const directUrl = readMcpLoopUrl();
+        const urlArg = directUrl ? `{ url: ${JSON.stringify(directUrl)} }` : "";
         const inject =
-          `<script type="module">\n  import('stackpack-state/telemetry').then(m => m.autoAttach()).catch(() => {});\n</script>`;
+          `<script type="module">\n  import('stackpack-state/telemetry').then(m => m.autoAttach(${urlArg})).catch(() => {});\n</script>`;
         const injectedHtml = html.includes("</body>")
           ? html.replace("</body>", `${inject}\n</body>`)
           : html + inject;
@@ -68,6 +76,19 @@ export default function debugToolkitPlugin(opts: DebugToolkitPluginOptions = {})
       return tags;
     },
   };
+}
+
+function readMcpLoopUrl(): string | null {
+  const path = join(process.cwd(), ".debug", "mcp.endpoint.json");
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as { port?: number; pid?: number };
+    if (typeof parsed.port !== "number" || typeof parsed.pid !== "number") return null;
+    try { process.kill(parsed.pid, 0); } catch { return null; }
+    return `ws://127.0.0.1:${parsed.port}/__stackpack_debug/loop`;
+  } catch {
+    return null;
+  }
 }
 
 /** Named export alias — preferred for new consumers */

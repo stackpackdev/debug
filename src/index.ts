@@ -1112,7 +1112,7 @@ async function main(): Promise<void> {
         try {
           const target = parsed.port ?? (await detectPort(child.stdout));
           const listen = parsed.port ? parsed.port + 1 : target + 1000;
-          proxyHandle = startProxy({ targetPort: target, listenPort: listen });
+          proxyHandle = startProxy({ targetPort: target, listenPort: listen, cwd });
           kv("proxy", `http://localhost:${listen} ${sym.arrow} :${target}`);
         } catch (e) {
           warn(`Proxy unavailable: ${e instanceof Error ? e.message : ""}`);

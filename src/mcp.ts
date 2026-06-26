@@ -122,6 +122,47 @@ function text(data: unknown) {
 }
 
 /**
+ * Extract the most likely PascalCase identifier from an error string —
+ * typically a React component, class, or named function. Filters out the
+ * common framework noise words ("Error", "Promise", "Object") that aren't
+ * useful as grep targets.
+ */
+function extractLikelyIdentifier(errorText: string): string | null {
+  const NOISE = new Set([
+    "Error", "TypeError", "ReferenceError", "SyntaxError", "RangeError",
+    "Promise", "Object", "Array", "String", "Number", "Boolean", "Symbol",
+    "Component", "React", "Function", "Module", "Loop", "Persistent",
+  ]);
+  // PascalCase tokens of length >= 4 are reasonable component-name candidates.
+  const matches = errorText.match(/\b[A-Z][a-zA-Z0-9]{3,}\b/g) ?? [];
+  for (const m of matches) {
+    if (!NOISE.has(m)) return m;
+  }
+  return null;
+}
+
+/**
+ * Grep the working tree for an identifier and return up to `max` file paths
+ * that mention it. Cheap fallback when the agent didn't pass `files`.
+ */
+function grepForIdentifier(workDir: string, ident: string, max: number): string[] {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(ident)) return [];
+  try {
+    // Use git's grep for speed and respect for .gitignore. Fall back silently
+    // if not in a git repo.
+    const { execSync } = require("node:child_process") as typeof import("node:child_process");
+    const out = execSync(
+      `git grep -l --max-count=1 -- "\\b${ident}\\b" 2>/dev/null | head -n ${max}`,
+      { cwd: workDir, encoding: "utf-8", timeout: 3000 },
+    ).trim();
+    if (!out) return [];
+    return out.split("\n").map(l => l.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Build a live status report from all available runtime sources.
  * Reads from .debug/live-context.json (written by serve process every 5s)
  * since MCP and serve run in separate processes with separate ring buffers.
@@ -997,13 +1038,14 @@ export function createMcpServer(): McpServer {
   // The killer feature. One call: error in, full context out.
   server.registerTool("debug_investigate", {
     title: "Investigate Error",
-    description: `The primary debugging tool. Works for BOTH runtime errors AND logic/behavior bugs.
+    description: `Deep-dive analysis for a specific error or bug. Call AFTER reading debug://status — that resource is the cheap, no-arg probe that surfaces what's currently broken (component names, line numbers, full hook table). Use this tool only once you have a concrete error string or stack trace to investigate.
 
 For runtime errors: give it the stack trace → returns error classification, source code at crash site, git context, environment.
 For logic bugs: describe the problem + pass file paths in 'files' parameter → returns source code from those files for comparison.
 
 Also auto-searches debug memory for past solutions to similar errors.
-Start every debugging session with this tool.`,
+
+Avoid passing truncated console snippets like "Error in %s" or strings containing [Component] / <Component> placeholders — those mean the resolved value was lost upstream; read debug://status first to get the substituted message.`,
     inputSchema: {
       error: z.string().describe("Error message, stack trace, or bug description"),
       sessionId: z.string().optional().describe("Existing session ID, or omit to auto-create"),
@@ -1011,12 +1053,40 @@ Start every debugging session with this tool.`,
       files: z.array(z.string()).optional().describe("File paths to examine (for logic bugs with no stack trace)"),
     },
   }, async ({ error: errorText, sessionId, problem, files: hintFiles }) => {
+    // Guard: bail early when the input is clearly an unresolved log fragment.
+    // %s / %d / %o are unsubstituted browser-console placeholders; [Component]
+    // / <Component> are the agent's own placeholder text leaking through.
+    // Either way, the actual identifier was lost upstream — debug://status has
+    // the resolved version, so redirect there instead of running a fruitless
+    // investigation.
+    const placeholderPatterns = [/\[Component\]/, /<Component>/, /(^|\s)%[sdofij](\s|$)/];
+    if (placeholderPatterns.some(rx => rx.test(errorText))) {
+      return text({
+        guard: "unresolved-placeholder",
+        nextStep: "Read debug://status first — the error you passed contains an unresolved placeholder (%s, [Component], etc.) which means the substituted identifier was lost. debug://status has the resolved message and the component/file/line table.",
+        passedError: errorText.slice(0, 200),
+      });
+    }
+
     // Auto-create session if needed
     let session;
     if (sessionId) {
       session = loadSession(cwd, sessionId);
     } else {
       session = createSession(cwd, problem ?? errorText.split("\n")[0]?.slice(0, 100) ?? "Debug session");
+    }
+
+    // Proactive identifier grep: when the caller didn't pass `files` but the
+    // error string contains a recognisable PascalCase identifier (likely a
+    // React component or class), search the codebase for it and use the hits
+    // as hint files. Caps at 5 results to keep the investigation focused.
+    let augmentedHintFiles = hintFiles;
+    if ((!hintFiles || hintFiles.length === 0)) {
+      const ident = extractLikelyIdentifier(errorText);
+      if (ident) {
+        const found = grepForIdentifier(cwd, ident, 5);
+        if (found.length > 0) augmentedHintFiles = found;
+      }
     }
 
     // Triage: classify error complexity
@@ -1044,7 +1114,7 @@ Start every debugging session with this tool.`,
     }
 
     // Run the investigation engine
-    const result = investigate(errorText, cwd, hintFiles);
+    const result = investigate(errorText, cwd, augmentedHintFiles);
 
     // Drain any accumulated build errors from the dev server
     const buildErrors = drainBuildErrors();
@@ -2758,9 +2828,30 @@ export async function startMcpServer(): Promise<void> {
     connectToGhostOs().catch(() => {}); // Fire and forget
   }
 
+  // Rehydrate any persisted loop events from a prior MCP run, then start the
+  // WebSocket terminator that owns the bus. State telemetry connects here
+  // (directly or through the dev-server proxy forwarding messages upstream).
+  const { startLoopServer, rehydrateFromDisk } = await import("./loop-server.js");
+  rehydrateFromDisk(cwd);
+  let loopServerHandle: { stop: () => void } | null = null;
+  try {
+    loopServerHandle = await startLoopServer(cwd);
+  } catch {
+    // Loop server is best-effort — if the port bind fails for any reason,
+    // MCP still serves its existing tools without state telemetry.
+  }
+
   // Clean shutdown
-  process.on("SIGINT", async () => { await disconnectGhostOs(); process.exit(0); });
-  process.on("SIGTERM", async () => { await disconnectGhostOs(); process.exit(0); });
+  process.on("SIGINT", async () => {
+    loopServerHandle?.stop();
+    await disconnectGhostOs();
+    process.exit(0);
+  });
+  process.on("SIGTERM", async () => {
+    loopServerHandle?.stop();
+    await disconnectGhostOs();
+    process.exit(0);
+  });
 
   // Attach detectors to the singleton bus. Warnings re-enter the bus so they
   // appear in debug://timeline and renderDetectorWarnings().
