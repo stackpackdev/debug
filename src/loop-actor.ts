@@ -1,5 +1,5 @@
 import { loopBus } from "./loop-bus.js";
-import type { LoopActor } from "@stackpack/loop-protocol";
+import type { LoopActor } from "./loop-protocol.js";
 
 /**
  * Returns the actor of the most recent state mutation whose wallTs is <=

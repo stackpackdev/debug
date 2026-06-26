@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { LoopBus } from '../src/loop-bus.js'
 import { startDetectors } from '../src/loop-detectors.js'
-import type { LoopEvent } from '@stackpack/loop-protocol'
+import type { LoopEvent } from '../src/loop-protocol.js'
 
 describe('loop detectors', () => {
   let bus: LoopBus

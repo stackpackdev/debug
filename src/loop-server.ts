@@ -28,7 +28,7 @@ import {
   isLoopEvent,
   LOOP_PROTOCOL_VERSION,
   type LoopEvent,
-} from "@stackpack/loop-protocol";
+} from "./loop-protocol.js";
 import { loopBus } from "./loop-bus.js";
 
 const ENDPOINT_FILENAME = "mcp.endpoint.json";

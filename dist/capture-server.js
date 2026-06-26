@@ -11,7 +11,7 @@ import { WebSocketServer } from "ws";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileIssue } from "./fix-library.js";
-import { decodeWireMessage, createLoopEvent } from "@stackpack/loop-protocol";
+import { decodeWireMessage, createLoopEvent } from "./loop-protocol.js";
 import { loopBus } from "./loop-bus.js";
 export function ingestBrowserMessage(msg) {
     if (msg.type === "console") {

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createLoopEvent } from '@stackpack/loop-protocol'
+import { createLoopEvent } from '../src/loop-protocol.js'
 import { rehydrateFromDisk, eventsPath } from '../src/loop-server.js'
 import { loopBus } from '../src/loop-bus.js'
 

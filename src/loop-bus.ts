@@ -1,4 +1,4 @@
-import type { LoopEvent, LoopActor } from '@stackpack/loop-protocol'
+import type { LoopEvent, LoopActor } from './loop-protocol.js'
 
 export interface LoopBusOptions {
   /** Ring-buffer capacity. Older events are dropped when exceeded. Default 5000. */

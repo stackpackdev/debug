@@ -1,4 +1,4 @@
-import type { LoopActor } from "@stackpack/loop-protocol";
+import type { LoopActor } from "./loop-protocol.js";
 /**
  * Returns the actor of the most recent state mutation whose wallTs is <=
  * the given timestamp. Useful for tagging an error with the most likely

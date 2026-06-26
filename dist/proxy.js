@@ -6,7 +6,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { onBrowserEvent } from "./capture.js";
 import { createGunzip } from "node:zlib";
-import { decodeWireMessage, encodeWireMessage, createLoopEvent, } from "@stackpack/loop-protocol";
+import { decodeWireMessage, encodeWireMessage, createLoopEvent, } from "./loop-protocol.js";
 import { startLoopForwarder } from "./loop-forwarder.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INJECTED_SCRIPT_TAG = `<script src="/__stackpack_debug/injected.js"></script>`;

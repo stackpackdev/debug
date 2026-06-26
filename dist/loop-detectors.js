@@ -1,4 +1,4 @@
-import { createLoopEvent } from "@stackpack/loop-protocol";
+import { createLoopEvent } from "./loop-protocol.js";
 const FLICKER_WINDOW_MS = 500;
 const FLICKER_THRESHOLD = 3;
 const CASCADE_DEPTH_LIMIT = 5;

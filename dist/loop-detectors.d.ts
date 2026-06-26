@@ -1,5 +1,5 @@
 import type { LoopBus } from "./loop-bus.js";
-import { type LoopEvent } from "@stackpack/loop-protocol";
+import { type LoopEvent } from "./loop-protocol.js";
 /**
  * Subscribe to a LoopBus and emit warning events when pathological
  * patterns are detected. The caller provides an emit callback so the

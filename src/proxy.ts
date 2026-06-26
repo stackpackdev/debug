@@ -10,7 +10,7 @@ import {
   decodeWireMessage,
   encodeWireMessage,
   createLoopEvent,
-} from "@stackpack/loop-protocol";
+} from "./loop-protocol.js";
 import { startLoopForwarder, type LoopForwarder } from "./loop-forwarder.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

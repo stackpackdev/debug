@@ -13,7 +13,7 @@ import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, renameSync, unlinkSync, } from "node:fs";
 import { join } from "node:path";
-import { decodeWireMessage, isLoopEvent, LOOP_PROTOCOL_VERSION, } from "@stackpack/loop-protocol";
+import { decodeWireMessage, isLoopEvent, LOOP_PROTOCOL_VERSION, } from "./loop-protocol.js";
 import { loopBus } from "./loop-bus.js";
 const ENDPOINT_FILENAME = "mcp.endpoint.json";
 const EVENTS_FILENAME = "loop-events.jsonl";

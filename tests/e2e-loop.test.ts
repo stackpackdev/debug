@@ -3,7 +3,7 @@ import { WebSocketServer } from 'ws'
 import { z } from 'zod'
 import { defineStore, storeRegistry } from 'stackpack-state'
 import { attachTelemetry, createWebSocketTransport, type TelemetryHandle } from 'stackpack-state/telemetry'
-import { decodeWireMessage } from '@stackpack/loop-protocol'
+import { decodeWireMessage } from '../src/loop-protocol.js'
 import { loopBus, renderStateResource, renderTimelineResource } from '../src/loop-bus.js'
 
 let wss: WebSocketServer

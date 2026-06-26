@@ -9,7 +9,7 @@ import {
   decodeWireMessage,
   encodeWireMessage,
   LOOP_PROTOCOL_VERSION,
-} from '@stackpack/loop-protocol'
+} from '../src/loop-protocol.js'
 import { startProxy } from '../src/proxy.js'
 
 interface UpstreamServer {

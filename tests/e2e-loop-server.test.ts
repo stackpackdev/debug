@@ -1,5 +1,5 @@
 // End-to-end smoke test that exercises ALL THREE packages in production wiring:
-//   stackpack-state telemetry → @stackpack/loop-protocol wire → debug loop-server
+//   stackpack-state telemetry → ../src/loop-protocol.js wire → debug loop-server
 //
 // This is the canary that proves the cross-package contract holds after the
 // 1.0.0 state release (zod peer-dep change) and the loop-server architecture
@@ -20,7 +20,7 @@ import {
 } from 'stackpack-state/telemetry'
 
 // loop-protocol — used implicitly by both packages (decode test)
-import { decodeWireMessage, isLoopEvent } from '@stackpack/loop-protocol'
+import { decodeWireMessage, isLoopEvent } from '../src/loop-protocol.js'
 
 // debug — production server-side terminator
 import {
@@ -119,7 +119,7 @@ describe('cross-package e2e — state ⇄ loop-protocol ⇄ debug loop-server', 
 
     // Use loop-protocol's encoders directly — this is the shape state's
     // transport-ws sends, so if the encode/decode contract drifts, this fails.
-    const { encodeWireMessage, createLoopEvent, LOOP_PROTOCOL_VERSION } = await import('@stackpack/loop-protocol')
+    const { encodeWireMessage, createLoopEvent, LOOP_PROTOCOL_VERSION } = await import('../src/loop-protocol.js')
 
     ws.send(encodeWireMessage({
       type: 'loop:hello',
@@ -159,7 +159,7 @@ describe('cross-package e2e — state ⇄ loop-protocol ⇄ debug loop-server', 
     expect(loopBus.timeline().length).toBe(0)
 
     // And it can still accept a valid message after the garbage.
-    const { encodeWireMessage, createLoopEvent } = await import('@stackpack/loop-protocol')
+    const { encodeWireMessage, createLoopEvent } = await import('../src/loop-protocol.js')
     const ev = createLoopEvent({ source: 'state', kind: 'mutation', storeName: 'x', payload: {} })
     ws.send(encodeWireMessage({ type: 'loop:event', event: ev }))
     await new Promise(r => setTimeout(r, 50))

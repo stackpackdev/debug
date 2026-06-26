@@ -1,5 +1,5 @@
 import type { LoopBus } from "./loop-bus.js";
-import { createLoopEvent, type LoopEvent } from "@stackpack/loop-protocol";
+import { createLoopEvent, type LoopEvent } from "./loop-protocol.js";
 
 const FLICKER_WINDOW_MS = 500;
 const FLICKER_THRESHOLD = 3;

@@ -7,7 +7,7 @@ import {
   createLoopEvent,
   encodeWireMessage,
   LOOP_PROTOCOL_VERSION,
-} from '@stackpack/loop-protocol'
+} from '../src/loop-protocol.js'
 import { startLoopServer, endpointPath, eventsPath, readEndpoint } from '../src/loop-server.js'
 import { loopBus } from '../src/loop-bus.js'
 
