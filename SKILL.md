@@ -134,6 +134,13 @@ Search past debug sessions for similar bugs.
 { query: "timestamps overlap in timeline", limit?: 5 }
 ```
 
+### debug_trace_origin
+Find what **emits** a redirect/navigation to a path — not the page it points at. For "redirects to /X" bugs where you keep editing /X without fixing it.
+```
+{ symptom: "/sign-in" }   // or "anon user redirects to /sign-in"
+```
+Statically scans for every `redirect()`/auth-guard (`requireUserId`, `auth.protect`, `RedirectToSignIn`) that targets the path, then traces which code calls those guards — flagging **auto-fired** call sites (on mount, `useEffect(…, [])`, auto-opening components) that run with no user click and so don't look like an auth flow. Auto-fired origins are ranked first; they're the usual culprit. `debug_investigate` runs this automatically when the error text looks like a redirect (see `symptomOrigin` in its output).
+
 ### debug_patterns
 Detect systemic issues across all past sessions. Finds recurring errors, hot files, regressions.
 
@@ -199,6 +206,28 @@ The toolkit detects running dev servers and maps their network connections autom
 6. For visual bugs, pass suspect file paths in `files` AND use `debug_visual`.
 7. **ALWAYS run `debug_verify` before claiming a fix works.**
 8. Pass `sessionId` from `debug_investigate` to all subsequent calls.
+
+## Redirect & state-conditional bugs — debug the ORIGIN, not the destination
+
+When a symptom is "redirects/navigates to /X", "/X loads instead of the page", or
+"works locally but breaks in prod", do NOT start by editing /X or the component the
+redirect lands on. That's the **destination** — almost never the cause.
+
+1. **The symptom names the wrong suspect.** A redirect to `/sign-in` makes the auth
+   UI look central. The real emitter is usually a guard (`requireUserId()` →
+   `redirect('/sign-in')`) called from somewhere non-obvious — often **auto-fired on
+   mount** (a `useEffect(…, [])`, an auto-opening paywall/dialog, a server action that
+   runs without a click). Run `debug_trace_origin({ symptom: "/sign-in" })` to find it.
+2. **"Works locally, breaks in prod" = state-dependent, not a code bug.** Same code,
+   different behavior between environments means the cause is whatever **differs by
+   state** — usually auth (signed-in locally, anonymous in prod) or data (a record that
+   exists locally but not for the affected user). Ask: *what code path runs only in the
+   broken state?* and inspect the relevant DB record for that state.
+3. **If you've edited the same file 3+ times without resolving it, stop.**
+   `debug_investigate` will flag this as `fileOrbiting`. Editing one file repeatedly
+   while the symptom persists means the cause is elsewhere. Switch from "what's wrong in
+   this file" to "what runs **unprompted** for the affected state that I haven't looked
+   at yet."
 
 ## The Loop — state-aware debugging
 

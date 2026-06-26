@@ -7,6 +7,11 @@
  * loop detection, and the MCP status resource.
  */
 import { type Server } from "node:http";
+export declare function ingestBrowserMessage(msg: {
+    type: string;
+    data: any;
+    ts: number;
+}): void;
 export interface CaptureEvent {
     type: "error" | "rejection" | "console" | "network" | "terminal" | "agent_chat" | "agent_message" | "editor_change";
     ts: number;

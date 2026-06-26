@@ -798,8 +798,10 @@ function redactConfigValue(key, value) {
     const isSafe = /^(NODE_ENV|PORT|HOST|AI_PROVIDER|LLM_PROVIDER|MODEL_PROVIDER|DEFAULT_PROVIDER|AI_MODEL|LLM_MODEL|MODEL_NAME|DEFAULT_MODEL|OLLAMA_HOST|OLLAMA_BASE_URL|OPENAI_BASE_URL)$/i.test(key);
     if (isSafe)
         return value;
-    // For URLs, show the host but redact path/credentials
-    if (/URL$/i.test(key) && value.startsWith("http")) {
+    // For URLs (http(s) and connection strings like postgresql://, mongodb+srv://),
+    // show the host but redact credentials and path. URL.host excludes userinfo,
+    // so embedded user:password never appears.
+    if (/URL$/i.test(key) && /^[a-z][a-z0-9+.\-]*:\/\//i.test(value)) {
         try {
             const u = new URL(value);
             return `${u.protocol}//${u.host}/***`;

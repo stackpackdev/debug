@@ -44,6 +44,8 @@ import { screenshotDir, saveScreenshot, getPackageVersion, checkForUpdate, runSe
 import { enableActivityWriter, logActivity } from "./activity.js";
 import { analyzeLoop } from "./loop.js";
 import { signatureFromError } from "./signature.js";
+import { traceSymptomOrigin, extractRedirectTarget } from "./symptom-origin.js";
+import { detectFileOrbiting, type OrbitEntry } from "./file-orbiting.js";
 import { TeamMemoryClient, mergeRecallResults, type TeamRecallResult } from "./storage.js";
 
 let cwd = process.cwd();
@@ -1514,6 +1516,50 @@ Avoid passing truncated console snippets like "Error in %s" or strings containin
       }
     }
 
+    // File orbiting — same suspect file across consecutive attempts while the
+    // symptom persists. Complements error-fingerprint orbiting above, which
+    // misses the case where the error text shifts but the edited files don't.
+    if (session.errorTrajectory && session.errorTrajectory.length >= 3) {
+      const orbitEntries: OrbitEntry[] = session.errorTrajectory.map((t) => ({
+        sourceFiles: t.sourceFile ? [t.sourceFile] : [],
+        resolved: false, // an investigate call is by definition an open attempt
+      }));
+      const fileOrbit = detectFileOrbiting(orbitEntries);
+      if (fileOrbit) {
+        response.fileOrbiting = {
+          file: fileOrbit.file,
+          attempts: fileOrbit.attempts,
+          message: fileOrbit.message,
+        };
+        response.nextStep = `⚠ FILE ORBITING: ${fileOrbit.message}${typeof response.nextStep === "string" ? "\n\n" + response.nextStep : ""}`;
+      }
+    }
+
+    // Symptom-origin trace — when the error/symptom describes a redirect or
+    // navigation, statically find what *emits* it (the cause) rather than the
+    // page it points at (the destination the agent tends to edit).
+    const redirectTarget = extractRedirectTarget(errorText);
+    if (redirectTarget) {
+      try {
+        const origin = traceSymptomOrigin(cwd, redirectTarget);
+        if (origin.origins.length > 0) {
+          response.symptomOrigin = {
+            target: origin.target,
+            summary: origin.summary,
+            origins: origin.origins.slice(0, 5).map((o) => ({
+              file: o.file,
+              line: o.line,
+              lineNumber: o.lineNumber,
+              emittedBy: o.exportedAs ?? undefined,
+              autoFired: o.autoFired,
+              triggeredFrom: o.callers.slice(0, 3),
+            })),
+          };
+          response.nextStep = `${origin.summary}${typeof response.nextStep === "string" ? "\n\n" + response.nextStep : ""}`;
+        }
+      } catch { /* tracer is best-effort; never block investigate */ }
+    }
+
     // Surface failed approaches from earlier in this session
     if (session.failedApproaches?.length) {
       response.failedApproaches = session.failedApproaches;
@@ -2276,6 +2322,50 @@ Idempotent — safe to call multiple times. Files are restored to their pre-inst
       message: r.verified
         ? `Done. ${r.cleaned} file(s) cleaned.${diagnosis ? " Diagnosis saved to memory." : ""}`
         : `Cleanup had issues: ${r.errors.join(", ")}`,
+    });
+  });
+
+  // ━━━ TOOL 6b: debug_trace_origin ━━━
+  server.registerTool("debug_trace_origin", {
+    title: "Trace Redirect/Navigation Origin",
+    description: `Find what *emits* a redirect or navigation to a path — not the page it points at.
+
+Use this when a symptom is "redirects to /X" or "navigates to /X unexpectedly" and you
+keep ending up editing /X itself without fixing it. The redirect's destination is almost
+never the cause. This statically scans the project source for every redirect()/guard
+(requireUserId, auth.protect, RedirectToSignIn, etc.) that targets the path, then traces
+which code calls those guards — flagging AUTO-FIRED call sites (on mount, useEffect(…,[]),
+auto-opening components) that run with no user interaction and so don't look like an auth
+flow. Those auto-fired origins are the usual culprit and are ranked first.`,
+    inputSchema: {
+      symptom: z.string().describe("The redirect destination path (e.g. /sign-in) or a symptom string containing it (e.g. 'anon user redirects to /sign-in')"),
+    },
+  }, async ({ symptom }) => {
+    const target = symptom.startsWith("/") ? symptom.trim() : extractRedirectTarget(symptom);
+    if (!target) {
+      return text({
+        error: "no-target",
+        message: "Could not extract a redirect destination path from the symptom. Pass an explicit path like \"/sign-in\".",
+      });
+    }
+    const result = traceSymptomOrigin(cwd, target);
+    logActivity({ tool: "debug_trace_origin", ts: Date.now(), summary: `${target}: ${result.origins.length} origin(s)`, metrics: { origins: result.origins.length, autoFired: result.origins.filter(o => o.autoFired).length } });
+    return text({
+      target,
+      summary: result.summary,
+      origins: result.origins.slice(0, 10).map((o) => ({
+        file: o.file,
+        line: o.line,
+        lineNumber: o.lineNumber,
+        emittedBy: o.exportedAs ?? undefined,
+        autoFired: o.autoFired,
+        triggeredFrom: o.callers.slice(0, 5),
+      })),
+      nextStep: result.origins.length === 0
+        ? `No own-source redirect to ${target} found. Check middleware, a third-party auth lib (Clerk auth.protect), or server config.`
+        : result.origins[0].autoFired
+          ? `Start at ${result.origins[0].file} and the auto-fired call site it's reached from. Do NOT edit ${target} — that is the destination, not the cause.`
+          : `Trace which code paths invoke ${result.origins[0].file} for the affected state (e.g. anonymous user) before editing ${target}.`,
     });
   });
 

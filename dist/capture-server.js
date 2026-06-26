@@ -11,6 +11,40 @@ import { WebSocketServer } from "ws";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileIssue } from "./fix-library.js";
+import { decodeWireMessage, createLoopEvent } from "@stackpack/loop-protocol";
+import { loopBus } from "./loop-bus.js";
+export function ingestBrowserMessage(msg) {
+    if (msg.type === "console") {
+        if (msg.data?.level === "error" || msg.data?.level === "warn") {
+            loopBus.ingest(createLoopEvent({
+                source: "browser",
+                kind: msg.data.level === "error" ? "console.error" : "console.warn",
+                payload: { message: (msg.data.args ?? []).join(" ") },
+            }));
+        }
+        return;
+    }
+    if (msg.type === "error") {
+        loopBus.ingest(createLoopEvent({
+            source: "browser",
+            kind: "window.error",
+            payload: {
+                message: msg.data?.message,
+                source: msg.data?.source,
+                line: msg.data?.line,
+            },
+        }));
+        return;
+    }
+    if (msg.type === "unhandledrejection" || msg.type === "rejection") {
+        loopBus.ingest(createLoopEvent({
+            source: "browser",
+            kind: "unhandled.rejection",
+            payload: { reason: msg.data?.reason ?? msg.data },
+        }));
+        return;
+    }
+}
 /**
  * Start the local capture server.
  * Returns handles for the HTTP server and a stop function.
@@ -54,13 +88,42 @@ export function startCaptureServer(opts) {
     wss.on("connection", (ws) => {
         ws.on("message", (data) => {
             try {
-                const event = JSON.parse(String(data));
+                const loop = decodeWireMessage(String(data));
+                if (loop) {
+                    if (loop.type === "loop:event")
+                        loopBus.ingest(loop.event);
+                    // hello and schema messages are consumed silently for now;
+                    // later tasks may extend behavior.
+                    return;
+                }
+                const raw = JSON.parse(String(data));
+                const event = raw;
                 eventCount++;
+                // Bridge browser messages into the LoopBus for unified timeline
+                ingestBrowserMessage(raw);
                 // Call the event handler
                 if (onEvent)
                     onEvent(event);
-                // Buffer for live-context
-                const text = event.message ?? event.args ?? event.reason ?? event.text ?? event.error ?? "unknown";
+                // Buffer for live-context. For browser console events, the resolved
+                // text lives in event.data.args (an array of stringified args). The
+                // older flat fields (event.message, event.text, etc.) are kept as
+                // fallbacks for non-console event shapes.
+                const eventData = raw.data;
+                let text = "unknown";
+                if (event.type === "console" && eventData && Array.isArray(eventData.args)) {
+                    text = eventData.args.map((a) => String(a)).join(" ");
+                }
+                else if (event.type === "error" && eventData && typeof eventData === "object") {
+                    text = eventData.message ?? eventData.reason ?? JSON.stringify(eventData);
+                }
+                else {
+                    text = event.message
+                        ?? (typeof event.args === "string" ? event.args : undefined)
+                        ?? event.reason
+                        ?? event.text
+                        ?? event.error
+                        ?? "unknown";
+                }
                 recentErrors.push({
                     timestamp: new Date(event.ts ?? Date.now()).toISOString(),
                     text: `[${event.type}] ${text}`.slice(0, 500),

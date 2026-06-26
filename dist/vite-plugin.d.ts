@@ -17,5 +17,11 @@ export interface DebugToolkitPluginOptions {
     wsPort?: number;
     /** Disable in production builds. Default: true (only active in dev) */
     devOnly?: boolean;
+    /** When true, inject an import() that calls stackpack-state's autoAttach() during dev. */
+    stateTelemetry?: boolean;
 }
+/** Alias for DebugToolkitPluginOptions */
+export type StackpackDebugOptions = DebugToolkitPluginOptions;
 export default function debugToolkitPlugin(opts?: DebugToolkitPluginOptions): Plugin;
+/** Named export alias — preferred for new consumers */
+export { debugToolkitPlugin as stackpackDebug };

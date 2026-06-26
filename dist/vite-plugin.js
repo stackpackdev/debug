@@ -11,6 +11,8 @@
  *
  * Or auto-configured by `npx stackpack-debug init` for Tauri projects.
  */
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 export default function debugToolkitPlugin(opts = {}) {
     const devOnly = opts.devOnly ?? true;
     let wsPort = opts.wsPort ?? parseInt(process.env.DEBUG_TOOLKIT_WS_PORT ?? "0", 10);
@@ -26,10 +28,10 @@ export default function debugToolkitPlugin(opts = {}) {
                 wsPort = 2420; // fallback
             }
         },
-        transformIndexHtml() {
+        transformIndexHtml(html) {
             // Inline the capture script — connects back to toolkit's WebSocket
             const script = buildInlineScript(wsPort);
-            return [
+            const tags = [
                 {
                     tag: "script",
                     attrs: { "data-stackpack-debug": "true" },
@@ -37,9 +39,45 @@ export default function debugToolkitPlugin(opts = {}) {
                     injectTo: "body",
                 },
             ];
+            if (opts.stateTelemetry) {
+                // If an MCP loop server is running, point state directly at it so
+                // events flow even when the proxy isn't in use. The endpoint file
+                // is project-local — read at HTML-transform time so a restarted MCP
+                // is picked up by the next page reload.
+                const directUrl = readMcpLoopUrl();
+                const urlArg = directUrl ? `{ url: ${JSON.stringify(directUrl)} }` : "";
+                const inject = `<script type="module">\n  import('stackpack-state/telemetry').then(m => m.autoAttach(${urlArg})).catch(() => {});\n</script>`;
+                const injectedHtml = html.includes("</body>")
+                    ? html.replace("</body>", `${inject}\n</body>`)
+                    : html + inject;
+                return { html: injectedHtml, tags };
+            }
+            return tags;
         },
     };
 }
+function readMcpLoopUrl() {
+    const path = join(process.cwd(), ".debug", "mcp.endpoint.json");
+    if (!existsSync(path))
+        return null;
+    try {
+        const parsed = JSON.parse(readFileSync(path, "utf-8"));
+        if (typeof parsed.port !== "number" || typeof parsed.pid !== "number")
+            return null;
+        try {
+            process.kill(parsed.pid, 0);
+        }
+        catch {
+            return null;
+        }
+        return `ws://127.0.0.1:${parsed.port}/__stackpack_debug/loop`;
+    }
+    catch {
+        return null;
+    }
+}
+/** Named export alias — preferred for new consumers */
+export { debugToolkitPlugin as stackpackDebug };
 function buildInlineScript(wsPort) {
     return `
 (function() {

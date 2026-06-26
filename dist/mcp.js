@@ -19,7 +19,7 @@ import { instrumentFile } from "./instrument.js";
 import { cleanupSession } from "./cleanup.js";
 import { drainCaptures, runAndCapture, getRecentCaptures, readTauriLogs, drainBuildErrors, peekRecentOutput, peekRecentWindow, readLiveContext, setLighthouseRunning, waitForNewOutput, extractFilePathsFromError, getTrackedProcesses, readConfigState } from "./capture.js";
 import { investigate, isVisualError, unwrapErrorChain, classifyError, detectProviderMismatch } from "./context.js";
-import { validateCommand } from "./security.js";
+import { validateCommand, redactSensitiveData, redactCaptureValue } from "./security.js";
 import { remember, recall, markUsed, memoryStats, maybeArchive } from "./memory.js";
 import { getCachedTopology } from "./network.js";
 import { triageError } from "./triage.js";
@@ -35,6 +35,8 @@ import { saveScreenshot, getPackageVersion, checkForUpdate, runSelfUpdate, backg
 import { enableActivityWriter, logActivity } from "./activity.js";
 import { analyzeLoop } from "./loop.js";
 import { signatureFromError } from "./signature.js";
+import { traceSymptomOrigin, extractRedirectTarget } from "./symptom-origin.js";
+import { detectFileOrbiting } from "./file-orbiting.js";
 import { TeamMemoryClient } from "./storage.js";
 let cwd = process.cwd();
 let envCaps = null;
@@ -93,6 +95,46 @@ function text(data) {
     return { content: [{ type: "text", text: JSON.stringify(data) }] };
 }
 /**
+ * Extract the most likely PascalCase identifier from an error string —
+ * typically a React component, class, or named function. Filters out the
+ * common framework noise words ("Error", "Promise", "Object") that aren't
+ * useful as grep targets.
+ */
+function extractLikelyIdentifier(errorText) {
+    const NOISE = new Set([
+        "Error", "TypeError", "ReferenceError", "SyntaxError", "RangeError",
+        "Promise", "Object", "Array", "String", "Number", "Boolean", "Symbol",
+        "Component", "React", "Function", "Module", "Loop", "Persistent",
+    ]);
+    // PascalCase tokens of length >= 4 are reasonable component-name candidates.
+    const matches = errorText.match(/\b[A-Z][a-zA-Z0-9]{3,}\b/g) ?? [];
+    for (const m of matches) {
+        if (!NOISE.has(m))
+            return m;
+    }
+    return null;
+}
+/**
+ * Grep the working tree for an identifier and return up to `max` file paths
+ * that mention it. Cheap fallback when the agent didn't pass `files`.
+ */
+function grepForIdentifier(workDir, ident, max) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(ident))
+        return [];
+    try {
+        // Use git's grep for speed and respect for .gitignore. Fall back silently
+        // if not in a git repo.
+        const { execSync } = require("node:child_process");
+        const out = execSync(`git grep -l --max-count=1 -- "\\b${ident}\\b" 2>/dev/null | head -n ${max}`, { cwd: workDir, encoding: "utf-8", timeout: 3000 }).trim();
+        if (!out)
+            return [];
+        return out.split("\n").map(l => l.trim()).filter(Boolean);
+    }
+    catch {
+        return [];
+    }
+}
+/**
  * Build a live status report from all available runtime sources.
  * Reads from .debug/live-context.json (written by serve process every 5s)
  * since MCP and serve run in separate processes with separate ring buffers.
@@ -124,18 +166,18 @@ function collapseReactNoise(msg) {
 function extractBrowserMessage(b) {
     const d = typeof b.data === "object" && b.data !== null ? b.data : null;
     if (d?.args)
-        return d.args.join(" ");
+        return redactSensitiveData(d.args.join(" "));
     if (d?.url)
-        return `${d.method ?? "GET"} ${d.url} → ${d.status ?? d.error}`;
+        return redactSensitiveData(`${d.method ?? "GET"} ${d.url} → ${d.status ?? d.error}`);
     if (d?.message)
-        return String(d.message);
-    return JSON.stringify(d ?? b.data);
+        return redactSensitiveData(String(d.message));
+    return redactSensitiveData(JSON.stringify(d ?? b.data));
 }
 function formatBrowserEvent(b, severity) {
     const d = typeof b.data === "object" && b.data !== null ? b.data : null;
     const icon = severity ? (SEVERITY_ICON[severity] ?? "") + " " : "";
     if (d?.url)
-        return `${icon}[network] ${d.method ?? "GET"} ${d.url} → ${d.status ?? d.error}`;
+        return redactSensitiveData(`${icon}[network] ${d.method ?? "GET"} ${d.url} → ${d.status ?? d.error}`);
     const level = d?.level ?? d?.type ?? b.source;
     const msg = collapseReactNoise(extractBrowserMessage(b));
     return `${icon}[${level}] ${msg}`;
@@ -298,6 +340,10 @@ async function buildLiveStatus(cwd, since) {
             appendSessions(sections, cwd);
             appendLoopWarning(sections, cwd);
             appendUpdateNotice(sections);
+            const { renderDetectorWarnings: rdw1 } = await import("./loop-bus.js");
+            const dw1 = rdw1();
+            if (dw1)
+                sections.push("\n" + dw1);
             return sections.join("\n");
         }
     }
@@ -349,6 +395,10 @@ async function buildLiveStatus(cwd, since) {
         appendTauriLogs(sections, cwd);
         appendSessions(sections, cwd);
         appendLoopWarning(sections, cwd);
+        const { renderDetectorWarnings: rdw2 } = await import("./loop-bus.js");
+        const dw2 = rdw2();
+        if (dw2)
+            sections.push("\n" + dw2);
         return sections.join("\n");
     }
     if (hasLive && live) {
@@ -508,7 +558,7 @@ async function buildLiveStatus(cwd, since) {
                 const deduped = new Map();
                 for (const b of networkEvents.slice(-20)) {
                     const d = typeof b.data === "object" && b.data !== null ? b.data : null;
-                    const url = String(d?.url ?? "");
+                    const url = redactSensitiveData(String(d?.url ?? ""));
                     const method = String(d?.method ?? "GET");
                     const status = d?.status ?? d?.error ?? "?";
                     const key = `${method} ${url} ${status}`;
@@ -670,6 +720,10 @@ async function buildLiveStatus(cwd, since) {
     appendSessions(sections, cwd);
     appendLoopWarning(sections, cwd);
     appendUpdateNotice(sections);
+    const { renderDetectorWarnings: rdw3 } = await import("./loop-bus.js");
+    const dw3 = rdw3();
+    if (dw3)
+        sections.push("\n" + dw3);
     return sections.join("\n");
 }
 function appendActiveProcesses(sections) {
@@ -871,21 +925,48 @@ export function createMcpServer() {
             lines.push("");
             lines.push(`**${totalErrors} total error(s)/warning(s).**`);
         }
+        const { renderDetectorWarnings } = await import("./loop-bus.js");
+        const detectorSection = renderDetectorWarnings();
+        if (detectorSection)
+            lines.push("\n" + detectorSection);
         return {
             contents: [{ uri: "debug://errors", mimeType: "text/markdown", text: lines.join("\n") }],
+        };
+    });
+    // ━━━ RESOURCE: debug_state ━━━
+    // Snapshot of all stackpack-state stores visible in the LoopBus.
+    server.registerResource("loop-state", "debug://state", {
+        description: "Snapshot of all stackpack-state stores: current value, gate flips, when flips, last actor.",
+        mimeType: "text/markdown",
+    }, async () => {
+        const { renderStateResource } = await import("./loop-bus.js");
+        return {
+            contents: [{ uri: "debug://state", mimeType: "text/markdown", text: renderStateResource() }],
+        };
+    });
+    // ━━━ RESOURCE: debug_timeline ━━━
+    // Causally-linked event timeline from the LoopBus.
+    server.registerResource("loop-timeline", "debug://timeline", {
+        description: "Causally-linked event timeline: state mutations, gate/when flips, console errors, network calls.",
+        mimeType: "text/markdown",
+    }, async () => {
+        const { renderTimelineResource } = await import("./loop-bus.js");
+        return {
+            contents: [{ uri: "debug://timeline", mimeType: "text/markdown", text: renderTimelineResource({ sinceMs: 60_000 }) }],
         };
     });
     // ━━━ TOOL 1: debug_investigate ━━━
     // The killer feature. One call: error in, full context out.
     server.registerTool("debug_investigate", {
         title: "Investigate Error",
-        description: `The primary debugging tool. Works for BOTH runtime errors AND logic/behavior bugs.
+        description: `Deep-dive analysis for a specific error or bug. Call AFTER reading debug://status — that resource is the cheap, no-arg probe that surfaces what's currently broken (component names, line numbers, full hook table). Use this tool only once you have a concrete error string or stack trace to investigate.
 
 For runtime errors: give it the stack trace → returns error classification, source code at crash site, git context, environment.
 For logic bugs: describe the problem + pass file paths in 'files' parameter → returns source code from those files for comparison.
 
 Also auto-searches debug memory for past solutions to similar errors.
-Start every debugging session with this tool.`,
+
+Avoid passing truncated console snippets like "Error in %s" or strings containing [Component] / <Component> placeholders — those mean the resolved value was lost upstream; read debug://status first to get the substituted message.`,
         inputSchema: {
             error: z.string().describe("Error message, stack trace, or bug description"),
             sessionId: z.string().optional().describe("Existing session ID, or omit to auto-create"),
@@ -893,6 +974,20 @@ Start every debugging session with this tool.`,
             files: z.array(z.string()).optional().describe("File paths to examine (for logic bugs with no stack trace)"),
         },
     }, async ({ error: errorText, sessionId, problem, files: hintFiles }) => {
+        // Guard: bail early when the input is clearly an unresolved log fragment.
+        // %s / %d / %o are unsubstituted browser-console placeholders; [Component]
+        // / <Component> are the agent's own placeholder text leaking through.
+        // Either way, the actual identifier was lost upstream — debug://status has
+        // the resolved version, so redirect there instead of running a fruitless
+        // investigation.
+        const placeholderPatterns = [/\[Component\]/, /<Component>/, /(^|\s)%[sdofij](\s|$)/];
+        if (placeholderPatterns.some(rx => rx.test(errorText))) {
+            return text({
+                guard: "unresolved-placeholder",
+                nextStep: "Read debug://status first — the error you passed contains an unresolved placeholder (%s, [Component], etc.) which means the substituted identifier was lost. debug://status has the resolved message and the component/file/line table.",
+                passedError: errorText.slice(0, 200),
+            });
+        }
         // Auto-create session if needed
         let session;
         if (sessionId) {
@@ -900,6 +995,19 @@ Start every debugging session with this tool.`,
         }
         else {
             session = createSession(cwd, problem ?? errorText.split("\n")[0]?.slice(0, 100) ?? "Debug session");
+        }
+        // Proactive identifier grep: when the caller didn't pass `files` but the
+        // error string contains a recognisable PascalCase identifier (likely a
+        // React component or class), search the codebase for it and use the hits
+        // as hint files. Caps at 5 results to keep the investigation focused.
+        let augmentedHintFiles = hintFiles;
+        if ((!hintFiles || hintFiles.length === 0)) {
+            const ident = extractLikelyIdentifier(errorText);
+            if (ident) {
+                const found = grepForIdentifier(cwd, ident, 5);
+                if (found.length > 0)
+                    augmentedHintFiles = found;
+            }
         }
         // Triage: classify error complexity
         const triage = triageError(errorText);
@@ -923,7 +1031,7 @@ Start every debugging session with this tool.`,
             });
         }
         // Run the investigation engine
-        const result = investigate(errorText, cwd, hintFiles);
+        const result = investigate(errorText, cwd, augmentedHintFiles);
         // Drain any accumulated build errors from the dev server
         const buildErrors = drainBuildErrors();
         // Auto-include recent runtime output from ring buffers (peek, don't drain)
@@ -1015,7 +1123,7 @@ Start every debugging session with this tool.`,
         const browserNetworkEvents = recentOutput.browser
             .filter(c => c.source === "browser-network")
             .map(c => c.data)
-            .map(d => ({ url: d?.url, status: d?.status, method: d?.method, ok: d?.ok }));
+            .map(d => ({ url: d?.url ? redactSensitiveData(String(d.url)) : undefined, status: d?.status, method: d?.method, ok: d?.ok }));
         const providerMismatch = detectProviderMismatch(errorChain, browserNetworkEvents, errorText);
         const response = {
             sessionId: session.id,
@@ -1291,6 +1399,49 @@ Start every debugging session with this tool.`,
                 }
             }
         }
+        // File orbiting — same suspect file across consecutive attempts while the
+        // symptom persists. Complements error-fingerprint orbiting above, which
+        // misses the case where the error text shifts but the edited files don't.
+        if (session.errorTrajectory && session.errorTrajectory.length >= 3) {
+            const orbitEntries = session.errorTrajectory.map((t) => ({
+                sourceFiles: t.sourceFile ? [t.sourceFile] : [],
+                resolved: false, // an investigate call is by definition an open attempt
+            }));
+            const fileOrbit = detectFileOrbiting(orbitEntries);
+            if (fileOrbit) {
+                response.fileOrbiting = {
+                    file: fileOrbit.file,
+                    attempts: fileOrbit.attempts,
+                    message: fileOrbit.message,
+                };
+                response.nextStep = `⚠ FILE ORBITING: ${fileOrbit.message}${typeof response.nextStep === "string" ? "\n\n" + response.nextStep : ""}`;
+            }
+        }
+        // Symptom-origin trace — when the error/symptom describes a redirect or
+        // navigation, statically find what *emits* it (the cause) rather than the
+        // page it points at (the destination the agent tends to edit).
+        const redirectTarget = extractRedirectTarget(errorText);
+        if (redirectTarget) {
+            try {
+                const origin = traceSymptomOrigin(cwd, redirectTarget);
+                if (origin.origins.length > 0) {
+                    response.symptomOrigin = {
+                        target: origin.target,
+                        summary: origin.summary,
+                        origins: origin.origins.slice(0, 5).map((o) => ({
+                            file: o.file,
+                            line: o.line,
+                            lineNumber: o.lineNumber,
+                            emittedBy: o.exportedAs ?? undefined,
+                            autoFired: o.autoFired,
+                            triggeredFrom: o.callers.slice(0, 3),
+                        })),
+                    };
+                    response.nextStep = `${origin.summary}${typeof response.nextStep === "string" ? "\n\n" + response.nextStep : ""}`;
+                }
+            }
+            catch { /* tracer is best-effort; never block investigate */ }
+        }
         // Surface failed approaches from earlier in this session
         if (session.failedApproaches?.length) {
             response.failedApproaches = session.failedApproaches;
@@ -1402,6 +1553,24 @@ Start every debugging session with this tool.`,
                 recommendation: loopAnalysis.recommendation,
             };
             response.nextStep = `⚠ ${loopAnalysis.recommendation}\n\n${response.nextStep ?? ""}`;
+        }
+        // Splice in state context when state telemetry is active
+        const { buildStateContext } = await import("./loop-bus.js");
+        const stateCtx = buildStateContext({ wallTs: Date.now() });
+        if (stateCtx) {
+            response.stateContext = {
+                recentMutations: stateCtx.recentMutations.map(m => ({
+                    id: m.id,
+                    ts: m.ts,
+                    storeName: m.storeName,
+                    actor: m.actor,
+                    diff: m.payload,
+                    causedBy: m.causedBy,
+                })),
+                lastActor: stateCtx.lastActor,
+                affectedStores: stateCtx.affectedStores,
+                causalChain: stateCtx.causalChain.map(e => ({ id: e.id, kind: e.kind, storeName: e.storeName })),
+            };
         }
         const budgeted = fitToBudget(response, { maxTokens: 4000 });
         return { content: [{ type: "text", text: JSON.stringify(budgeted) }] };
@@ -1599,8 +1768,8 @@ When running commands against localhost, server-side logs from the request windo
                 mode: "recent-window",
                 windowMs,
                 total: filtered.length,
-                output: filtered.slice(-(limit ?? 30)).map((c) => ({ source: c.source, data: c.data })),
-                errors: errors.slice(0, 10).map((c) => c.data?.text),
+                output: filtered.slice(-(limit ?? 30)).map((c) => ({ source: c.source, data: redactCaptureValue(c.data) })),
+                errors: errors.slice(0, 10).map((c) => redactSensitiveData(c.data?.text ?? "")),
                 nextStep: filtered.length === 0
                     ? `No output in the last ${Math.round(windowMs / 1000)}s. The server may not be producing output.`
                     : errors.length > 0
@@ -1632,8 +1801,8 @@ When running commands against localhost, server-side logs from the request windo
             return text({
                 waited: true, waitedMs: result.waitedMs, timedOut: false,
                 total: filtered.length,
-                output: filtered.slice(0, 30).map((c) => ({ source: c.source, data: c.data })),
-                errors: errors.slice(0, 10).map((c) => c.data?.text),
+                output: filtered.slice(0, 30).map((c) => ({ source: c.source, data: redactCaptureValue(c.data) })),
+                errors: errors.slice(0, 10).map((c) => redactSensitiveData(c.data?.text ?? "")),
                 nextStep: errors.length > 0
                     ? "New errors arrived. Use debug_investigate with the error text for full context."
                     : `${filtered.length} new line(s) captured.`,
@@ -1681,9 +1850,9 @@ When running commands against localhost, server-side logs from the request windo
             return text({
                 sessionId: session.id,
                 total: recent.total, showing: filtered.length,
-                tagged: tagged.map((c) => ({ tag: c.markerTag, hypothesis: c.hypothesisId, data: c.data })),
-                errors: errors.slice(0, 10).map((c) => c.data?.text),
-                output: filtered.slice(0, 15).map((c) => ({ source: c.source, data: c.data })),
+                tagged: tagged.map((c) => ({ tag: c.markerTag, hypothesis: c.hypothesisId, data: redactCaptureValue(c.data) })),
+                errors: errors.slice(0, 10).map((c) => redactSensitiveData(c.data?.text ?? "")),
+                output: filtered.slice(0, 15).map((c) => ({ source: c.source, data: redactCaptureValue(c.data) })),
                 serverLogs: serverLogs && serverLogs.length > 0 ? serverLogs.slice(0, 20) : undefined,
                 nextStep: errors.length > 0
                     ? "Errors detected. Use debug_investigate with the error text for full context."
@@ -1707,7 +1876,7 @@ When running commands against localhost, server-side logs from the request windo
         logActivity({ tool: "debug_capture", ts: Date.now(), summary: "peeked buffers (no session)", metrics: { total: filtered.length, errors: errors.length } });
         return text({
             total: filtered.length,
-            output: filtered.slice(0, 30).map((c) => ({ source: c.source, data: c.data })),
+            output: filtered.slice(0, 30).map((c) => ({ source: c.source, data: redactCaptureValue(c.data) })),
             errors: errors.slice(0, 10).map((c) => c.data?.text),
             nextStep: errors.length > 0
                 ? "Errors detected. Use debug_investigate with the error text for full context."
@@ -1841,8 +2010,8 @@ Use this before cleanup to confirm the fix actually works.`,
             passed,
             exitCode,
             errorCount: errors.length,
-            errors: errors.slice(0, 5).map((c) => c.data?.text),
-            output: captures.slice(0, 10).map((c) => c.data?.text),
+            errors: errors.slice(0, 5).map((c) => redactSensitiveData(c.data?.text ?? "")),
+            output: captures.slice(0, 10).map((c) => redactSensitiveData(c.data?.text ?? "")),
             nextStep: passed
                 ? "Fix verified and auto-saved to memory! Use debug_cleanup to remove instrumentation (optional — diagnosis already recorded)."
                 : "Fix failed. Review the errors above and try a different approach.",
@@ -1987,6 +2156,49 @@ Idempotent — safe to call multiple times. Files are restored to their pre-inst
             message: r.verified
                 ? `Done. ${r.cleaned} file(s) cleaned.${diagnosis ? " Diagnosis saved to memory." : ""}`
                 : `Cleanup had issues: ${r.errors.join(", ")}`,
+        });
+    });
+    // ━━━ TOOL 6b: debug_trace_origin ━━━
+    server.registerTool("debug_trace_origin", {
+        title: "Trace Redirect/Navigation Origin",
+        description: `Find what *emits* a redirect or navigation to a path — not the page it points at.
+
+Use this when a symptom is "redirects to /X" or "navigates to /X unexpectedly" and you
+keep ending up editing /X itself without fixing it. The redirect's destination is almost
+never the cause. This statically scans the project source for every redirect()/guard
+(requireUserId, auth.protect, RedirectToSignIn, etc.) that targets the path, then traces
+which code calls those guards — flagging AUTO-FIRED call sites (on mount, useEffect(…,[]),
+auto-opening components) that run with no user interaction and so don't look like an auth
+flow. Those auto-fired origins are the usual culprit and are ranked first.`,
+        inputSchema: {
+            symptom: z.string().describe("The redirect destination path (e.g. /sign-in) or a symptom string containing it (e.g. 'anon user redirects to /sign-in')"),
+        },
+    }, async ({ symptom }) => {
+        const target = symptom.startsWith("/") ? symptom.trim() : extractRedirectTarget(symptom);
+        if (!target) {
+            return text({
+                error: "no-target",
+                message: "Could not extract a redirect destination path from the symptom. Pass an explicit path like \"/sign-in\".",
+            });
+        }
+        const result = traceSymptomOrigin(cwd, target);
+        logActivity({ tool: "debug_trace_origin", ts: Date.now(), summary: `${target}: ${result.origins.length} origin(s)`, metrics: { origins: result.origins.length, autoFired: result.origins.filter(o => o.autoFired).length } });
+        return text({
+            target,
+            summary: result.summary,
+            origins: result.origins.slice(0, 10).map((o) => ({
+                file: o.file,
+                line: o.line,
+                lineNumber: o.lineNumber,
+                emittedBy: o.exportedAs ?? undefined,
+                autoFired: o.autoFired,
+                triggeredFrom: o.callers.slice(0, 5),
+            })),
+            nextStep: result.origins.length === 0
+                ? `No own-source redirect to ${target} found. Check middleware, a third-party auth lib (Clerk auth.protect), or server config.`
+                : result.origins[0].autoFired
+                    ? `Start at ${result.origins[0].file} and the auto-fired call site it's reached from. Do NOT edit ${target} — that is the destination, not the cause.`
+                    : `Trace which code paths invoke ${result.origins[0].file} for the affected state (e.g. anonymous user) before editing ${target}.`,
         });
     });
     // ━━━ TOOL 7: debug_recall ━━━
@@ -2481,7 +2693,7 @@ Lightweight — returns a summary, not the full capture history.`,
                 tag: i.markerTag, file: basename(i.filePath), line: i.lineNumber, hypothesis: i.hypothesisId,
             })),
             recentCaptures: recent.showing > 0
-                ? { count: recent.total, recent: recent.captures.slice(0, 5).map((c) => ({ source: c.source, tag: c.markerTag, data: c.data })) }
+                ? { count: recent.total, recent: recent.captures.slice(0, 5).map((c) => ({ source: c.source, tag: c.markerTag, data: redactCaptureValue(c.data) })) }
                 : null,
             diagnosis: session.diagnosis,
         });
@@ -2496,9 +2708,35 @@ export async function startMcpServer() {
     if (envCaps?.visual.ghostOsConfigured) {
         connectToGhostOs().catch(() => { }); // Fire and forget
     }
+    // Rehydrate any persisted loop events from a prior MCP run, then start the
+    // WebSocket terminator that owns the bus. State telemetry connects here
+    // (directly or through the dev-server proxy forwarding messages upstream).
+    const { startLoopServer, rehydrateFromDisk } = await import("./loop-server.js");
+    rehydrateFromDisk(cwd);
+    let loopServerHandle = null;
+    try {
+        loopServerHandle = await startLoopServer(cwd);
+    }
+    catch {
+        // Loop server is best-effort — if the port bind fails for any reason,
+        // MCP still serves its existing tools without state telemetry.
+    }
     // Clean shutdown
-    process.on("SIGINT", async () => { await disconnectGhostOs(); process.exit(0); });
-    process.on("SIGTERM", async () => { await disconnectGhostOs(); process.exit(0); });
+    process.on("SIGINT", async () => {
+        loopServerHandle?.stop();
+        await disconnectGhostOs();
+        process.exit(0);
+    });
+    process.on("SIGTERM", async () => {
+        loopServerHandle?.stop();
+        await disconnectGhostOs();
+        process.exit(0);
+    });
+    // Attach detectors to the singleton bus. Warnings re-enter the bus so they
+    // appear in debug://timeline and renderDetectorWarnings().
+    const { startDetectors } = await import("./loop-detectors.js");
+    const { loopBus } = await import("./loop-bus.js");
+    startDetectors(loopBus, w => loopBus.ingest(w));
     const server = createMcpServer();
     const transport = new StdioServerTransport();
     await server.connect(transport);

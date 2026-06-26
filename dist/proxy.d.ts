@@ -1,6 +1,8 @@
 export interface ProxyOptions {
     targetPort: number;
     listenPort: number;
+    /** Working directory used to find .debug/mcp.endpoint.json. Defaults to process.cwd(). */
+    cwd?: string;
 }
 export declare function startProxy(opts: ProxyOptions): {
     close: () => void;

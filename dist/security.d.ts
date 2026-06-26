@@ -13,6 +13,13 @@ export declare function validateCommand(command: string): string;
  */
 export declare function redactSensitiveData(text: string): string;
 /**
+ * Deep-redact a captured value before it is surfaced to the agent. Walks
+ * strings, arrays, and plain objects, applying redactSensitiveData to every
+ * string. Used at the emit points of debug_capture / debug://errors so raw
+ * browser/terminal capture `data` cannot carry secrets through.
+ */
+export declare function redactCaptureValue<T>(value: T): T;
+/**
  * Redact sensitive headers from captured network requests.
  */
 export declare function redactHeaders(headers: Record<string, string>): Record<string, string>;
